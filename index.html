@@ -6,26 +6,35 @@
 <title>tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
-body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto}
-#log{white-space:pre-wrap}
-#line{display:flex;margin-top:24px}
+body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto;display:flex;flex-direction:column}
+#main{display:flex;flex-direction:column}
+#heatmap{margin-top:16px}
+#stats{margin-top:16px;white-space:pre}
+#chart{margin-top:16px}
+#terminal{margin-top:24px}
+#line{display:flex}
 #prompt{margin-right:6px}
 input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;flex:1}
+#log{white-space:pre-wrap}
 .cell{width:10px;height:10px;margin:2px;background:#111;display:inline-block}
 .cell.active{background:#22c55e}
 .tooltip{position:absolute;background:#000;color:#d1d5db;font-size:12px;padding:6px;white-space:pre}
 .err{color:#ef4444}
-#stats{margin-top:24px;white-space:pre}
-#chart{margin-top:24px}
 </style>
 </head>
 <body>
 
-<div id="log"></div>
-<div id="heatmap"></div>
-<div id="stats"></div>
-<canvas id="chart" width="720" height="120"></canvas>
-<div id="line"><span id="prompt">(guest)></span><input id="cmd"></div>
+<div id="main">
+  <div id="heatmap"></div>
+  <div id="stats"></div>
+  <canvas id="chart" width="720" height="120"></canvas>
+</div>
+
+<div id="terminal">
+  <div id="log"></div>
+  <div id="line"><span id="prompt">(guest)></span><input id="cmd"></div>
+</div>
+
 <div id="tooltip" class="tooltip" style="display:none"></div>
 
 <script>
@@ -46,7 +55,7 @@ const tooltip=document.getElementById('tooltip')
 let history=[],hIndex=0
 let weightsMap={}
 
-function print(t,c){const d=document.createElement('div');if(c)d.className=c;d.textContent=t;logEl.appendChild(d)}
+function print(t,c){const d=document.createElement('div');if(c)d.className=c;d.textContent=t;logEl.appendChild(d);document.getElementById('terminal').scrollTop=logEl.scrollHeight}
 function today(){return new Date().toISOString().slice(0,10)}
 function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
 
@@ -55,8 +64,15 @@ function setPrompt(p){document.getElementById('prompt').textContent=p}
 async function run(input){
 
  if(awaitingPassword){
-  if(input===PASSWORD){auth=true;localStorage.setItem('auth','true');print('logged in');setPrompt('>')}
-  else print('denied','err')
+  if(input===PASSWORD){
+    auth=true
+    localStorage.setItem('auth','true')
+    print('logged in')
+    setPrompt('>')
+  } else {
+    print('denied','err')
+    setPrompt('(guest)>')
+  }
   awaitingPassword=false
   cmd.type='text'
   return
@@ -66,8 +82,20 @@ async function run(input){
  const p=input.trim().split(' ')
  const c=p[0]
 
- if(c==='login'){awaitingPassword=true;cmd.type='password';setPrompt('password>');return}
- if(c==='logout'){auth=false;localStorage.removeItem('auth');setPrompt('(guest)>');print('logged out');return}
+ if(c==='login'){
+  awaitingPassword=true
+  cmd.type='password'
+  setPrompt('password>')
+  return
+ }
+
+ if(c==='logout'){
+  auth=false
+  localStorage.removeItem('auth')
+  setPrompt('(guest)>')
+  print('logged out')
+  return
+ }
 
  if(c==='help'){print('login logout w wt p s exp clear help');return}
  if(c==='clear'){logEl.innerHTML='';return}
@@ -121,19 +149,15 @@ function stats(data,weights){
  const g=aggregate(data)
  const t=today()
  let out=''
-
  Object.keys(g).forEach(name=>{
   const dates=Object.keys(g[name]).sort().reverse()
   const todayVal=g[name][t]||'—'
   const best=Math.max(...Object.values(g[name]))
   const lastDate=dates.find(d=>d!==t)
   const lastVal=lastDate?g[name][lastDate]:null
-
   out+=`${name} ${todayVal} (best:${best}${lastVal?`, last:${lastVal}`:''})\n`
  })
-
  if(weights.length){out+=`weight ${weights[weights.length-1].value} kg`}
-
  document.getElementById('stats').textContent=out
 }
 
@@ -202,6 +226,7 @@ async function load(){
  chart(weights||[])
 }
 
+setPrompt(auth?'>':'(guest)>')
 cmd.focus()
 load()
 </script>
