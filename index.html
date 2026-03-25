@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto}
+#login{position:absolute;top:20px;right:20px;cursor:pointer}
+.err{color:#ef4444}
+input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit}
+#heatmap{margin-top:24px}
+.week{display:inline-block;vertical-align:top;margin-right:2px}
+.cell{width:10px;height:10px;margin:2px;background:#000;display:block}
+.cell.active{background:#22c55e}
+.tooltip{position:absolute;background:#000;color:#d1d5db;font-size:12px;padding:6px;white-space:pre}
+#stats{margin-top:24px;white-space:pre}
+#chart{margin-top:32px}
+#inputs{margin-top:32px}
+</style>
+</head>
+<body>
+
+<div id="login">[login]</div>
+<div id="heatmap"></div>
+<div id="stats"></div>
+<canvas id="chart" width="720" height="120"></canvas>
+<div id="inputs"></div>
+<div id="msg"></div>
+<div id="tooltip" class="tooltip" style="display:none"></div>
+
+<script>
+const SUPABASE_URL = 'https://ptlccumwheypalpvbhms.supabase.co'
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0bGNjdW13aGV5cGFscHZiaG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDY4MzQsImV4cCI6MjA5MDAyMjgzNH0.LkvF84QWKntY4-3YHtBvN_ygRsn4QJleFuA5pnpwsvU'
+const PASSWORD = 'mubi'
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+let auth = localStorage.getItem('auth') === 'true'
+
+const map = { pu:'Push-ups', sq:'Squats', cr:'Crunches', pl:'Plank' }
+
+const loginEl = document.getElementById('login')
+const inputsEl = document.getElementById('inputs')
+const msg = document.getElementById('msg')
+const tooltip = document.getElementById('tooltip')
+
+let lastDelete = null
+
+function setMsg(t,c){ msg.textContent=t; msg.className=c||''; setTimeout(()=>msg.textContent='',2000) }
+
+loginEl.onclick = ()=>{
+ if(!auth){
+  const i=document.createElement('input')
+  loginEl.innerHTML=''
+  loginEl.appendChild(i)
+  i.focus()
+  i.onkeydown=e=>{
+   if(e.key==='Enter'){
+    if(i.value===PASSWORD){ auth=true; localStorage.setItem('auth','true'); render() }
+    else{ setMsg('denied','err'); loginEl.textContent='[login]' }
+   }
+  }
+ } else { auth=false; localStorage.removeItem('auth'); render() }
+}
+
+function today(){ return new Date().toISOString().slice(0,10) }
+function validDate(d){ return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(new Date(d)) }
+
+async function insertWorkout(name_raw,value,date){
+ const name = map[name_raw]||name_raw
+ await sb.from('workouts').insert([{name_raw,name,value,date}])
+}
+async function insertWeight(value,date){
+ await sb.from('weights').insert([{value,date}])
+}
+
+function inputUI(){
+ if(!auth){ inputsEl.innerHTML=''; loginEl.textContent='[login]'; return }
+ loginEl.textContent='[logout]'
+ inputsEl.innerHTML=`w> <input id="w"><br style="margin-top:12px">wt> <input id="wt"><br style="margin-top:12px">exp> <input id="exp">`
+ const w=document.getElementById('w')
+ const wt=document.getElementById('wt')
+ const exp=document.getElementById('exp')
+ w.focus()
+
+ document.onkeydown=e=>{
+  if(e.key==='/'){ e.preventDefault(); w.focus() }
+  if(e.key==='Escape'){ document.activeElement.blur() }
+ }
+
+ w.onkeydown=async e=>{
+  if(e.key==='Enter'){
+   const p=w.value.trim().split(' ')
+   if(p.length<2) return setMsg('error: invalid input','err')
+   let [ex,val,date]=p
+   val=parseInt(val)
+   date=date||today()
+   if(!val||val<=0||!validDate(date)) return setMsg('error: invalid input','err')
+   await insertWorkout(ex,val,date)
+   await load(true,ex,val,date)
+   w.value=''
+  }
+ }
+
+ wt.onkeydown=async e=>{
+  if(e.key==='Enter'){
+   const p=wt.value.trim().split(' ')
+   let [val,date]=p
+   val=parseFloat(val)
+   date=date||today()
+   if(!val||val<=0||!validDate(date)) return setMsg('error: invalid input','err')
+   await insertWeight(val,date)
+   setMsg(`→ ${val} kg (${date})`)
+   wt.value=''
+   load()
+  }
+ }
+
+ exp.onkeydown=async e=>{
+  if(e.key==='Enter'){
+   await exportCSV(exp.value.trim())
+   exp.value=''
+  }
+ }
+}
+
+async function exportCSV(q){
+ let mode='w', month=null
+ if(q==='all') mode='all'
+ else if(q==='w'||q==='') mode='w'
+ else if(q==='wt') mode='wt'
+ else if(/^\d{4}-\d{2}$/.test(q)){ mode='all'; month=q }
+ else return setMsg('error: invalid input','err')
+
+ let workouts=[],weights=[]
+ if(mode==='w'||mode==='all'){
+  const {data}=await sb.from('workouts').select('name,value,date').order('date',{ascending:true})
+  workouts=data||[]
+ }
+ if(mode==='wt'||mode==='all'){
+  const {data}=await sb.from('weights').select('value,date').order('date',{ascending:true})
+  weights=data||[]
+ }
+
+ if(month){
+  workouts=workouts.filter(r=>r.date.startsWith(month))
+  weights=weights.filter(r=>r.date.startsWith(month))
+ }
+
+ if(mode==='w'){
+  if(!workouts.length) return setMsg('no data')
+  download('name,value,date\n'+workouts.map(r=>`${r.name},${r.value},${r.date}`).join('\n'),'workouts.csv')
+ }
+ else if(mode==='wt'){
+  if(!weights.length) return setMsg('no data')
+  download('value,date\n'+weights.map(r=>`${r.value},${r.date}`).join('\n'),'weights.csv')
+ }
+ else{
+  if(!workouts.length && !weights.length) return setMsg('no data')
+  let csv='type,name,value,date\n'
+  workouts.forEach(r=>csv+=`workout,${r.name},${r.value},${r.date}\n`)
+  weights.forEach(r=>csv+=`weight,,${r.value},${r.date}\n`)
+  download(csv,'all.csv')
+ }
+ setMsg('exported csv')
+}
+
+function download(csv,name){
+ const blob=new Blob([csv],{type:'text/csv'})
+ const url=URL.createObjectURL(blob)
+ const a=document.createElement('a')
+ a.href=url
+ a.download=name
+ a.click()
+ URL.revokeObjectURL(url)
+}
+
+function group(data){
+ const g={}
+ data.forEach(r=>{
+  if(!g[r.name]) g[r.name]={}
+  if(!g[r.name][r.date]) g[r.name][r.date]=0
+  g[r.name][r.date]+=r.value
+ })
+ return g
+}
+
+function stats(data){
+ const g=group(data), t=today()
+ let arr=[]
+ Object.keys(g).forEach(name=>{
+  const dates=Object.keys(g[name]).sort().reverse()
+  arr.push({name,dates,g})
+ })
+ arr.sort((a,b)=>b.dates[0].localeCompare(a.dates[0]))
+ arr=arr.slice(0,5)
+ const maxLen=Math.max(...arr.map(x=>x.name.length))
+ let out=''
+ arr.forEach(x=>{
+  const name=x.name
+  const todayVal=x.g[name][t]||'—'
+  const best=Math.max(...Object.values(x.g[name]))
+  const last=x.dates.find(d=>d!==t)
+  out+=name.padEnd(maxLen+2)+`${todayVal} (best: ${best}${last?`, last: ${x.g[name][last]}`:''})\n`
+ })
+ document.getElementById('stats').textContent=out
+}
+
+function buildDays(data){
+ const m={}
+ data.forEach(r=>{
+  if(!m[r.date]) m[r.date]={}
+  if(!m[r.date][r.name]) m[r.date][r.name]=0
+  m[r.date][r.name]+=r.value
+ })
+ return m
+}
+
+function heatmap(data){
+ const div=document.getElementById('heatmap')
+ div.innerHTML=''
+ const m=buildDays(data)
+ let start=new Date('2026-03-24'), end=new Date()
+ while(start.getDay()!==1) start.setDate(start.getDate()-1)
+ let cur=new Date(start)
+ while(cur<=end){
+  const col=document.createElement('div')
+  col.className='week'
+  for(let i=0;i<7;i++){
+   const d=new Date(cur)
+   const key=d.toISOString().slice(0,10)
+   const el=document.createElement('div')
+   el.className='cell'+(m[key]?' active':'')
+   el.tabIndex=0
+   el.onmouseenter=e=>showTip(e,key,m[key])
+   el.onmouseleave=hideTip
+   el.onfocus=e=>showTip(e,key,m[key])
+   el.onblur=hideTip
+   col.appendChild(el)
+   cur.setDate(cur.getDate()+1)
+  }
+  div.appendChild(col)
+ }
+}
+
+function showTip(e,date,data){
+ tooltip.style.display='block'
+ tooltip.style.left=e.pageX+10+'px'
+ tooltip.style.top=e.pageY+10+'px'
+ let txt=date
+ if(data) Object.keys(data).forEach(k=>txt+=`\n${k} ${data[k]}   x`)
+ tooltip.textContent=txt
+}
+function hideTip(){ tooltip.style.display='none' }
+
+function chart(weights){
+ const c=document.getElementById('chart'), ctx=c.getContext('2d')
+ ctx.clearRect(0,0,c.width,c.height)
+ if(weights.length<2) return
+ weights.sort((a,b)=>new Date(a.date)-new Date(b.date))
+ const vals=weights.map(w=>w.value)
+ const min=Math.min(...vals), max=Math.max(...vals)
+ ctx.beginPath()
+ weights.forEach((w,i)=>{
+  const x=i*(c.width/(weights.length-1))
+  const y=c.height-((w.value-min)/(max-min))*c.height
+  if(i===0) ctx.moveTo(x,y)
+  else ctx.lineTo(x,y)
+ })
+ ctx.strokeStyle='#60a5fa'
+ ctx.stroke()
+}
+
+function feedback(data,ex,val,date){
+ const name=map[ex]||ex
+ const g=group(data)
+ const total=g[name][date]
+ if(date===today()) setMsg(`→ +${val} ${name.toLowerCase()} (today: ${total})`)
+ else setMsg(`→ +${val} ${name.toLowerCase()} (${date} total: ${total})`)
+}
+
+async function load(showFeedback=false,ex,val,date){
+ const {data}=await sb.from('workouts').select('name,value,date').order('date',{ascending:false})
+ const {data:weights}=await sb.from('weights').select('value,date')
+ stats(data||[])
+ heatmap(data||[])
+ chart(weights||[])
+ if(showFeedback) feedback(data,ex,val,date)
+}
+
+function render(){ inputUI(); load() }
+render()
+</script>
+</body>
+</html>
