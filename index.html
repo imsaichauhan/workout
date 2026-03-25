@@ -7,7 +7,9 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto}
-input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;width:100%}
+#line{display:flex}
+#prompt{margin-right:6px}
+input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;flex:1}
 #log{white-space:pre-wrap}
 .cell{width:10px;height:10px;margin:2px;background:#111;display:inline-block}
 .cell.active{background:#22c55e}
@@ -16,9 +18,8 @@ input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit
 </style>
 </head>
 <body>
-
 <div id="log"></div>
-<div>> <input id="cmd"></div>
+<div id="line"><span id="prompt">></span><input id="cmd"></div>
 <div id="heatmap"></div>
 <div id="stats"></div>
 <canvas id="chart" width="720" height="120"></canvas>
@@ -29,8 +30,11 @@ const SUPABASE_URL='https://ptlccumwheypalpvbhms.supabase.co'
 const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0bGNjdW13aGV5cGFscHZiaG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDY4MzQsImV4cCI6MjA5MDAyMjgzNH0.LkvF84QWKntY4-3YHtBvN_ygRsn4QJleFuA5pnpwsvU'
 const PASSWORD='mubi'
 
+const map={pu:'Push-ups',sq:'Squats',cr:'Crunches',pl:'Plank'}
+
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY)
 let auth=localStorage.getItem('auth')==='true'
+let awaitingPassword=false
 
 const logEl=document.getElementById('log')
 const cmd=document.getElementById('cmd')
@@ -41,51 +45,49 @@ let weightsMap={}
 
 function print(t,c){const d=document.createElement('div');if(c)d.className=c;d.textContent=t;logEl.appendChild(d);window.scrollTo(0,document.body.scrollHeight)}
 function today(){return new Date().toISOString().slice(0,10)}
+function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
 
 async function run(input){
+ if(awaitingPassword){
+  if(input===PASSWORD){auth=true;localStorage.setItem('auth','true');print('logged in')}
+  else print('denied','err')
+  awaitingPassword=false
+  return
+ }
+
  print('> '+input)
  const p=input.trim().split(' ')
  const c=p[0]
 
- if(c==='login'){
-  if(p[1]===PASSWORD){auth=true;localStorage.setItem('auth','true');print('logged in')}
-  else print('denied','err')
+ if(c==='login'){awaitingPassword=true;print('password:');return}
+ if(c==='logout'){auth=false;localStorage.removeItem('auth');print('logged out');return}
+
+ if(c==='help'){
+  print('commands: login logout w wt p s exp clear help')
+  return
  }
 
- else if(c==='logout'){auth=false;localStorage.removeItem('auth');print('logged out')}
+ if(c==='clear'){logEl.innerHTML='';return}
 
- else if(c==='help'){
-  print('commands:')
-  print('login <pass>')
-  print('logout')
-  print('w <ex> <n>')
-  print('wt <n>')
-  print('p <n>')
-  print('s <n>')
-  print('exp [w|wt|all|YYYY-MM]')
-  print('clear')
- }
-
- else if(c==='clear'){logEl.innerHTML=''}
-
- else if(c==='w'){
+ if(c==='w'){
   if(!auth) return print('login required','err')
-  let ex=p[1],val=parseInt(p[2]),date=today()
-  if(!val) return print('× invalid','err')
-  await sb.from('workouts').insert([{name_raw:ex,name:ex,value:val,date}])
-  print(`+${val} ${ex}`)
+  let ex=p[1],val=parseInt(p[2]),date=p[3]||today()
+  if(!val||!validDate(date)) return print('× invalid','err')
+  const name=map[ex]||ex
+  await sb.from('workouts').insert([{name_raw:ex,name,value:val,date}])
+  print(`+${val} ${name}`)
  }
 
  else if(c==='wt'){
   if(!auth) return print('login required','err')
-  let val=parseFloat(p[1]),date=today()
-  if(!val) return print('× invalid','err')
+  let val=parseFloat(p[1]),date=p[2]||today()
+  if(!val||!validDate(date)) return print('× invalid','err')
   await sb.from('weights').insert([{value:val,date}])
   print(`${val} kg`)
  }
 
- else if(c==='p'){await run(`w pu ${p[1]}`);return}
- else if(c==='s'){await run(`w sq ${p[1]}`);return}
+ else if(c==='p'){await run(`w pu ${p[1]} ${p[2]||''}`);return}
+ else if(c==='s'){await run(`w sq ${p[1]} ${p[2]||''}`);return}
 
  else if(c==='exp'){await exportCSV(p[1])}
 
@@ -95,7 +97,12 @@ async function run(input){
 }
 
 cmd.onkeydown=async e=>{
- if(e.key==='Enter'){const v=cmd.value;history.push(v);hIndex=history.length;await run(v);cmd.value=''}
+ if(e.key==='Enter'){
+  const v=cmd.value
+  history.push(v);hIndex=history.length
+  await run(v)
+  cmd.value=''
+ }
  if(e.key==='ArrowUp'){hIndex=Math.max(0,hIndex-1);cmd.value=history[hIndex]||'';e.preventDefault()}
  if(e.key==='ArrowDown'){hIndex=Math.min(history.length,hIndex+1);cmd.value=history[hIndex]||'';e.preventDefault()}
  if(e.ctrlKey&&e.key==='l'){logEl.innerHTML='';e.preventDefault()}
@@ -104,37 +111,28 @@ cmd.onkeydown=async e=>{
 async function exportCSV(q){
  const {data:w}=await sb.from('workouts').select('name,value,date')
  const {data:wt}=await sb.from('weights').select('value,date')
- let workouts=w||[],weights=wt||[]
-
- if(q&&/^\d{4}-\d{2}$/.test(q)){
-  workouts=workouts.filter(r=>r.date.startsWith(q))
-  weights=weights.filter(r=>r.date.startsWith(q))
- }
-
  let csv='type,name,value,date\n'
- workouts.forEach(r=>csv+=`workout,${r.name},${r.value},${r.date}\n`)
- weights.forEach(r=>csv+=`weight,,${r.value},${r.date}\n`)
- download(csv,'data.csv')
+ ;(w||[]).forEach(r=>csv+=`workout,${r.name},${r.value},${r.date}\n`)
+ ;(wt||[]).forEach(r=>csv+=`weight,,${r.value},${r.date}\n`)
+ const blob=new Blob([csv]);const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click()
  print('exported')
 }
 
-function download(csv,name){const blob=new Blob([csv]);const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click()}
-
 function heatmap(data){
  const div=document.getElementById('heatmap');div.innerHTML=''
- const map={}
- data.forEach(r=>{if(!map[r.date])map[r.date]=[];map[r.date].push(r)})
+ const mapDay={}
+ data.forEach(r=>{if(!mapDay[r.date])mapDay[r.date]=[];mapDay[r.date].push(r)})
  let d=new Date('2026-03-24'),end=new Date()
  while(d<=end){
   const key=d.toISOString().slice(0,10)
   const el=document.createElement('div')
-  el.className='cell'+(map[key]?' active':'')
+  el.className='cell'+(mapDay[key]?' active':'')
   el.onmouseenter=e=>{
    tooltip.style.display='block'
    tooltip.style.left=e.pageX+10+'px'
    tooltip.style.top=e.pageY+10+'px'
    let txt=key
-   if(map[key])map[key].forEach(x=>txt+=`\n${x.name} ${x.value}`)
+   if(mapDay[key])mapDay[key].forEach(x=>txt+=`\n${x.name} ${x.value}`)
    if(weightsMap[key])txt+=`\nwt ${weightsMap[key]}`
    tooltip.textContent=txt
   }
@@ -156,12 +154,7 @@ function stats(data,weights){
   const vals=Object.values(g[name])
   out+=`${name} (best:${Math.max(...vals)})\n`
  })
-
- if(weights.length){
-  const latest=weights[weights.length-1]
-  out+=`weight ${latest.value}`
- }
-
+ if(weights.length){out+=`weight ${weights[weights.length-1].value}`}
  document.getElementById('stats').textContent=out
 }
 
