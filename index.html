@@ -7,47 +7,21 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 body{
-  background:#000;
-  color:#d1d5db;
+  background:#000;color:#d1d5db;
   font-family:monospace;
-  max-width:720px;
-  margin:40px auto;
+  max-width:720px;margin:40px auto;
   user-select:text;
 }
-
 #heatmap{margin-top:16px}
 #stats{margin-top:16px;white-space:pre}
-#chart{margin-top:16px}
-
 #terminal{margin-top:24px}
 #line{display:flex}
 #prompt{margin-right:6px}
-
-input{
-  background:none;
-  border:none;
-  outline:none;
-  color:#d1d5db;
-  font-family:inherit;
-  flex:1;
-}
-
-#log{
-  white-space:pre-wrap;
-  cursor:text;
-}
-
-.cell{
-  width:10px;height:10px;margin:2px;
-  background:#111;display:inline-block
-}
+input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;flex:1}
+#log{white-space:pre-wrap;cursor:text}
+.cell{width:10px;height:10px;margin:2px;background:#111;display:inline-block}
 .cell.active{background:#22c55e}
-
-.tooltip{
-  position:absolute;background:#000;color:#d1d5db;
-  font-size:12px;padding:6px;white-space:pre
-}
-
+.tooltip{position:absolute;background:#000;color:#d1d5db;font-size:12px;padding:6px;white-space:pre}
 .err{color:#ef4444}
 </style>
 </head>
@@ -55,7 +29,6 @@ input{
 
 <div id="heatmap"></div>
 <div id="stats"></div>
-<canvas id="chart" width="500" height="100"></canvas>
 
 <div id="terminal">
   <div id="log"></div>
@@ -70,7 +43,6 @@ const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYm
 const PASSWORD='mubi'
 
 const map={pu:'Push-ups',sq:'Squats',cr:'Crunches',pl:'Plank'}
-
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY)
 
 let auth=localStorage.getItem('auth')==='true'
@@ -80,30 +52,40 @@ const logEl=document.getElementById('log')
 const cmd=document.getElementById('cmd')
 const tooltip=document.getElementById('tooltip')
 
-let history=[],hIndex=0
 let weightsMap={}
+
+// ✅ LOCAL DATE FIX (robust)
+function today(){
+  const d = new Date()
+  const offset = d.getTimezoneOffset()
+  const local = new Date(d.getTime() - offset*60000)
+  return local.toISOString().slice(0,10)
+}
 
 function print(t,c){
   const d=document.createElement('div')
   if(c)d.className=c
   d.textContent=t
   logEl.appendChild(d)
-  document.getElementById('terminal').scrollTop=logEl.scrollHeight
 }
-
-// ✅ FIXED LOCAL DATE (IMPORTANT)
-function today(){
-  const d=new Date()
-  const y=d.getFullYear()
-  const m=String(d.getMonth()+1).padStart(2,'0')
-  const day=String(d.getDate()).padStart(2,'0')
-  return `${y}-${m}-${day}`
-}
-
-function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
 
 function setPrompt(p){document.getElementById('prompt').textContent=p}
 
+// ---------- SPARKLINE ----------
+function sparkline(data){
+  if(data.length<2) return ''
+  const chars='▁▂▃▄▅▆▇█'
+  const vals=data.map(d=>d.value)
+  const min=Math.min(...vals), max=Math.max(...vals)
+
+  return data.map(d=>{
+    if(max===min) return '▅'
+    const i=Math.floor((d.value-min)/(max-min)*(chars.length-1))
+    return chars[i]
+  }).join('')
+}
+
+// ---------- WORKOUT ----------
 async function upsertWorkout(ex,val,date,append){
   const name=map[ex]||ex
   if(append){
@@ -114,6 +96,7 @@ async function upsertWorkout(ex,val,date,append){
   }
 }
 
+// ---------- COMMAND ----------
 async function run(input){
 
   if(awaitingPassword){
@@ -132,7 +115,6 @@ async function run(input){
   }
 
   print('> '+input)
-
   const p=input.trim().split(' ')
   const c=p[0]
 
@@ -152,11 +134,10 @@ async function run(input){
   }
 
   if(c==='help'){
-    print('w <ex> <n> [date]  → replace')
-    print('w <ex> +<n> / + <n> → append')
-    print('wt <n> [date]')
-    print('p/s shortcuts')
-    print('login logout clear')
+    print('w <ex> <n> → replace')
+    print('w <ex> + <n> → append')
+    print('wt <n>')
+    print('login/logout/clear')
     return
   }
 
@@ -169,19 +150,13 @@ async function run(input){
     let raw=p[2]
     let append=false
 
-    if(raw==='+' ){
-      append=true
-      raw=p[3]
-    } else if(raw && raw.startsWith('+')){
-      append=true
-      raw=raw.slice(1)
-    }
+    if(raw==='+' ){append=true;raw=p[3]}
+    else if(raw?.startsWith('+')){append=true;raw=raw.slice(1)}
 
     let val=parseInt(raw)
-    let dateIndex = append && p[2]==='+' ? 4 : 3
-    let date=p[dateIndex]||today()
+    let date = today()
 
-    if(!val||!validDate(date)) return print('× invalid','err')
+    if(!val) return print('× invalid','err')
 
     await upsertWorkout(ex,val,date,append)
     print(`${append?'+':''}${val} ${map[ex]||ex}`)
@@ -189,45 +164,16 @@ async function run(input){
 
   else if(c==='wt'){
     if(!auth) return print('login required','err')
-    let val=parseFloat(p[1]),date=p[2]||today()
-    if(!val||!validDate(date)) return print('× invalid','err')
-    await sb.from('weights').insert([{value:val,date}])
+    let val=parseFloat(p[1])
+    if(!val) return print('× invalid','err')
+    await sb.from('weights').insert([{value:val,date:today()}])
     print(`${val} kg`)
   }
-
-  else if(c==='p'){await run(`w pu ${p[1]}`);return}
-  else if(c==='s'){await run(`w sq ${p[1]}`);return}
-
-  else print('× invalid','err')
 
   load()
 }
 
-cmd.onkeydown=async e=>{
-  if(e.key==='Enter'){
-    const v=cmd.value
-    history.push(v);hIndex=history.length
-    await run(v)
-    cmd.value=''
-  }
-  if(e.key==='ArrowUp'){
-    hIndex=Math.max(0,hIndex-1)
-    cmd.value=history[hIndex]||''
-    e.preventDefault()
-  }
-  if(e.key==='ArrowDown'){
-    hIndex=Math.min(history.length,hIndex+1)
-    cmd.value=history[hIndex]||''
-    e.preventDefault()
-  }
-  if(e.ctrlKey&&e.key==='l'){
-    logEl.innerHTML=''
-    e.preventDefault()
-  }
-}
-
-setInterval(()=>cmd.focus(),500)
-
+// ---------- STATS ----------
 function aggregate(data){
   const g={}
   data.forEach(r=>{
@@ -236,6 +182,15 @@ function aggregate(data){
     g[r.name][r.date]+=r.value
   })
   return g
+}
+
+function processWeights(weights){
+  const m={}
+  weights.forEach(w=>m[w.date]=w.value)
+  weightsMap=m
+  return Object.keys(m)
+    .sort()
+    .map(d=>({date:d,value:m[d]}))
 }
 
 function stats(data,weights){
@@ -254,48 +209,20 @@ function stats(data,weights){
   })
 
   if(weights.length){
-    out+=`weight ${weights[weights.length-1].value} kg`
+    const last=weights[weights.length-1]
+    const prev=weights[weights.length-2]
+    const delta=prev ? last.value-prev.value : 0
+
+    const recent=weights.slice(-7)
+    const spark=sparkline(recent)
+
+    out+=`wt ${last.value}kg (${delta>=0?'+':''}${delta}) ${spark}`
   }
 
   document.getElementById('stats').textContent=out
 }
 
-function processWeights(weights){
-  const m={}
-  weights.forEach(w=>m[w.date]=w.value)
-  weightsMap=m
-  return Object.keys(m).map(d=>({date:d,value:m[d]}))
-}
-
-function chart(weights){
-  weights=processWeights(weights)
-  const c=document.getElementById('chart'),ctx=c.getContext('2d')
-  ctx.clearRect(0,0,c.width,c.height)
-  if(weights.length<2)return
-
-  weights.sort((a,b)=>new Date(a.date)-new Date(b.date))
-
-  const vals=weights.map(w=>w.value)
-  const min=Math.min(...vals),max=Math.max(...vals)
-
-  ctx.beginPath()
-  weights.forEach((w,i)=>{
-    const x=i*(c.width/(weights.length-1))
-    const y=c.height-((w.value-min)/(max-min))*c.height
-    if(i===0)ctx.moveTo(x,y)
-    else ctx.lineTo(x,y)
-  })
-
-  ctx.strokeStyle='#60a5fa'
-  ctx.stroke()
-
-  ctx.fillStyle='#9ca3af'
-  ctx.fillText(weights[0].date.slice(5),0,c.height-2)
-  ctx.fillText(weights[weights.length-1].date.slice(5),c.width-40,c.height-2)
-  ctx.fillText(min+'kg',0,c.height-12)
-  ctx.fillText(max+'kg',0,10)
-}
-
+// ---------- HEATMAP ----------
 function heatmap(data){
   const div=document.getElementById('heatmap');div.innerHTML=''
   const mapDay={}
@@ -306,7 +233,8 @@ function heatmap(data){
 
   let d=new Date('2026-03-24'),end=new Date()
   while(d<=end){
-    const key=d.toISOString().slice(0,10)
+    const key=todayFromDate(d)
+
     const el=document.createElement('div')
     el.className='cell'+(mapDay[key]?' active':'')
 
@@ -316,6 +244,8 @@ function heatmap(data){
       tooltip.style.top=e.pageY+10+'px'
 
       let txt=key
+
+      // workouts
       if(mapDay[key]){
         const agg={}
         mapDay[key].forEach(x=>{
@@ -324,27 +254,55 @@ function heatmap(data){
         })
         Object.keys(agg).forEach(k=>txt+=`\n${k} ${agg[k]}`)
       }
-      if(weightsMap[key])txt+=`\nwt ${weightsMap[key]} kg`
+
+      // weights FULL LIST
+      const weightEntries=Object.entries(weightsMap)
+        .sort()
+        .map(([d,v])=>`${d} → ${v}kg`)
+      if(weightEntries.length){
+        txt+=`\n\nweights:\n`+weightEntries.join('\n')
+      }
 
       tooltip.textContent=txt
     }
 
     el.onmouseleave=()=>tooltip.style.display='none'
+
     div.appendChild(el)
     d.setDate(d.getDate()+1)
   }
 }
 
-async function load(){
-  const {data}=await sb.from('workouts').select('name,value,date')
-  const {data:weights}=await sb.from('weights').select('value,date')
-  heatmap(data||[])
-  stats(data||[],weights||[])
-  chart(weights||[])
+// helper for heatmap (local safe)
+function todayFromDate(d){
+  const dt=new Date(d)
+  const y=dt.getFullYear()
+  const m=String(dt.getMonth()+1).padStart(2,'0')
+  const day=String(dt.getDate()).padStart(2,'0')
+  return `${y}-${m}-${day}`
 }
 
+// ---------- LOAD ----------
+async function load(){
+  const {data}=await sb.from('workouts').select('name,value,date')
+  const {data:weightsRaw}=await sb.from('weights').select('value,date')
+
+  const weights=processWeights(weightsRaw||[])
+
+  heatmap(data||[])
+  stats(data||[],weights||[])
+}
+
+// ---------- INIT ----------
+cmd.onkeydown=e=>{
+  if(e.key==='Enter'){
+    run(cmd.value)
+    cmd.value=''
+  }
+}
+
+setInterval(()=>cmd.focus(),500)
 setPrompt(auth?'>':'(guest)>')
-cmd.focus()
 load()
 </script>
 </body>
