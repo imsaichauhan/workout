@@ -8,27 +8,25 @@
 <style>
 body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto}
 #login{position:absolute;top:20px;right:20px;cursor:pointer}
-.err{color:#ef4444}
-input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit}
+input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;width:100%}
+#log{white-space:pre-wrap}
 #heatmap{margin-top:24px}
-.week{display:inline-block;vertical-align:top;margin-right:2px}
-.cell{width:10px;height:10px;margin:2px;background:#000;display:block}
+.week{display:inline-block}
+.cell{width:10px;height:10px;margin:2px;background:#111;display:block}
 .cell.active{background:#22c55e}
-.tooltip{position:absolute;background:#000;color:#d1d5db;font-size:12px;padding:6px;white-space:pre}
 #stats{margin-top:24px;white-space:pre}
 #chart{margin-top:32px}
-#inputs{margin-top:32px}
+.err{color:#ef4444}
 </style>
 </head>
 <body>
 
 <div id="login">[login]</div>
+<div id="log"></div>
+<div>> <input id="cmd"></div>
 <div id="heatmap"></div>
 <div id="stats"></div>
 <canvas id="chart" width="720" height="120"></canvas>
-<div id="inputs"></div>
-<div id="msg"></div>
-<div id="tooltip" class="tooltip" style="display:none"></div>
 
 <script>
 const SUPABASE_URL = 'https://ptlccumwheypalpvbhms.supabase.co'
@@ -36,144 +34,180 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const PASSWORD = 'mubi'
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
 let auth = localStorage.getItem('auth') === 'true'
+
+const loginEl = document.getElementById('login')
+const logEl = document.getElementById('log')
+const cmd = document.getElementById('cmd')
 
 const map = { pu:'Push-ups', sq:'Squats', cr:'Crunches', pl:'Plank' }
 
-const loginEl = document.getElementById('login')
-const inputsEl = document.getElementById('inputs')
-const msg = document.getElementById('msg')
-const tooltip = document.getElementById('tooltip')
+let history = []
+let hIndex = 0
 
-let lastDelete = null
+function print(t,c){
+ const line = document.createElement('div')
+ if(c) line.className=c
+ line.textContent = t
+ logEl.appendChild(line)
+ window.scrollTo(0,document.body.scrollHeight)
+}
 
-function setMsg(t,c){ msg.textContent=t; msg.className=c||''; setTimeout(()=>msg.textContent='',2000) }
+function today(){ return new Date().toISOString().slice(0,10) }
 
 loginEl.onclick = ()=>{
  if(!auth){
   const i=document.createElement('input')
+  i.type='password'
   loginEl.innerHTML=''
   loginEl.appendChild(i)
   i.focus()
   i.onkeydown=e=>{
    if(e.key==='Enter'){
-    if(i.value===PASSWORD){ auth=true; localStorage.setItem('auth','true'); render() }
-    else{ setMsg('denied','err'); loginEl.textContent='[login]' }
+    if(i.value===PASSWORD){
+     auth=true
+     localStorage.setItem('auth','true')
+     loginEl.textContent='[logout]'
+     print('logged in')
+     printHelp()
+     cmd.focus()
+    } else {
+     print('denied','err')
+     loginEl.textContent='[login]'
+    }
    }
   }
- } else { auth=false; localStorage.removeItem('auth'); render() }
+ } else {
+  auth=false
+  localStorage.removeItem('auth')
+  loginEl.textContent='[login]'
+ }
 }
 
-function today(){ return new Date().toISOString().slice(0,10) }
-function validDate(d){ return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(new Date(d)) }
-
-async function insertWorkout(name_raw,value,date){
- const name = map[name_raw]||name_raw
- await sb.from('workouts').insert([{name_raw,name,value,date}])
+function printHelp(){
+ print('commands:')
+ print('w <ex> <n> [date]')
+ print('wt <n> [date]')
+ print('p <n> (pushups)')
+ print('s <n> (squats)')
+ print('exp [w|wt|all|YYYY-MM]')
+ print('help')
 }
-async function insertWeight(value,date){
- await sb.from('weights').insert([{value,date}])
+
+async function run(input){
+ if(!auth){ print('login first','err'); return }
+
+ print('> '+input)
+
+ const p=input.trim().split(' ')
+ const cmd=p[0]
+
+ if(cmd==='help'){ printHelp(); return }
+
+ if(cmd==='w'){
+  let ex=p[1], val=parseInt(p[2]), date=p[3]||today()
+  if(!val) return print('× invalid','err')
+  const name=map[ex]||ex
+  await sb.from('workouts').insert([{name_raw:ex,name,value:val,date}])
+  print(`+${val} ${name}`)
+ }
+
+ else if(cmd==='wt'){
+  let val=parseFloat(p[1]), date=p[2]||today()
+  if(!val) return print('× invalid','err')
+  await sb.from('weights').insert([{value:val,date}])
+  print(`${val} kg`)
+ }
+
+ else if(cmd==='p'){
+  await run(`w pu ${p[1]}`)
+  return
+ }
+
+ else if(cmd==='s'){
+  await run(`w sq ${p[1]}`)
+  return
+ }
+
+ else if(cmd==='exp'){
+  await exportCSV(p[1])
+ }
+
+ else{
+  print('× invalid','err')
+ }
+
+ load()
 }
 
-function inputUI(){
- if(!auth){ inputsEl.innerHTML=''; loginEl.textContent='[login]'; return }
- loginEl.textContent='[logout]'
- inputsEl.innerHTML=`w> <input id="w"><br style="margin-top:12px">wt> <input id="wt"><br style="margin-top:12px">exp> <input id="exp">`
- const w=document.getElementById('w')
- const wt=document.getElementById('wt')
- const exp=document.getElementById('exp')
- w.focus()
-
- document.onkeydown=e=>{
-  if(e.key==='/'){ e.preventDefault(); w.focus() }
-  if(e.key==='Escape'){ document.activeElement.blur() }
+cmd.onkeydown = async e=>{
+ if(e.key==='Enter'){
+  const v=cmd.value
+  history.push(v)
+  hIndex=history.length
+  await run(v)
+  cmd.value=''
  }
 
- w.onkeydown=async e=>{
-  if(e.key==='Enter'){
-   const p=w.value.trim().split(' ')
-   if(p.length<2) return setMsg('error: invalid input','err')
-   let [ex,val,date]=p
-   val=parseInt(val)
-   date=date||today()
-   if(!val||val<=0||!validDate(date)) return setMsg('error: invalid input','err')
-   await insertWorkout(ex,val,date)
-   await load(true,ex,val,date)
-   w.value=''
-  }
+ if(e.key==='ArrowUp'){
+  hIndex=Math.max(0,hIndex-1)
+  cmd.value=history[hIndex]||''
+  e.preventDefault()
  }
 
- wt.onkeydown=async e=>{
-  if(e.key==='Enter'){
-   const p=wt.value.trim().split(' ')
-   let [val,date]=p
-   val=parseFloat(val)
-   date=date||today()
-   if(!val||val<=0||!validDate(date)) return setMsg('error: invalid input','err')
-   await insertWeight(val,date)
-   setMsg(`→ ${val} kg (${date})`)
-   wt.value=''
-   load()
-  }
+ if(e.key==='ArrowDown'){
+  hIndex=Math.min(history.length,hIndex+1)
+  cmd.value=history[hIndex]||''
+  e.preventDefault()
  }
 
- exp.onkeydown=async e=>{
-  if(e.key==='Enter'){
-   await exportCSV(exp.value.trim())
-   exp.value=''
-  }
+ if(e.ctrlKey && e.key==='l'){
+  logEl.innerHTML=''
+  e.preventDefault()
  }
 }
 
 async function exportCSV(q){
- let mode='w', month=null
- if(q==='all') mode='all'
- else if(q==='w'||q==='') mode='w'
- else if(q==='wt') mode='wt'
- else if(/^\d{4}-\d{2}$/.test(q)){ mode='all'; month=q }
- else return setMsg('error: invalid input','err')
-
  let workouts=[],weights=[]
- if(mode==='w'||mode==='all'){
-  const {data}=await sb.from('workouts').select('name,value,date').order('date',{ascending:true})
-  workouts=data||[]
- }
- if(mode==='wt'||mode==='all'){
-  const {data}=await sb.from('weights').select('value,date').order('date',{ascending:true})
-  weights=data||[]
+
+ const {data:w}=await sb.from('workouts').select('name,value,date').order('date',{ascending:true})
+ const {data:wt}=await sb.from('weights').select('value,date').order('date',{ascending:true})
+
+ workouts=w||[]
+ weights=wt||[]
+
+ if(q && /^\d{4}-\d{2}$/.test(q)){
+  workouts=workouts.filter(r=>r.date.startsWith(q))
+  weights=weights.filter(r=>r.date.startsWith(q))
  }
 
- if(month){
-  workouts=workouts.filter(r=>r.date.startsWith(month))
-  weights=weights.filter(r=>r.date.startsWith(month))
+ if(q==='wt'){
+  let csv='value,date\n'
+  weights.forEach(r=>csv+=`${r.value},${r.date}\n`)
+  download(csv,'weights.csv')
  }
-
- if(mode==='w'){
-  if(!workouts.length) return setMsg('no data')
-  download('name,value,date\n'+workouts.map(r=>`${r.name},${r.value},${r.date}`).join('\n'),'workouts.csv')
- }
- else if(mode==='wt'){
-  if(!weights.length) return setMsg('no data')
-  download('value,date\n'+weights.map(r=>`${r.value},${r.date}`).join('\n'),'weights.csv')
+ else if(q==='w' || !q){
+  let csv='name,value,date\n'
+  workouts.forEach(r=>csv+=`${r.name},${r.value},${r.date}\n`)
+  download(csv,'workouts.csv')
  }
  else{
-  if(!workouts.length && !weights.length) return setMsg('no data')
   let csv='type,name,value,date\n'
   workouts.forEach(r=>csv+=`workout,${r.name},${r.value},${r.date}\n`)
   weights.forEach(r=>csv+=`weight,,${r.value},${r.date}\n`)
   download(csv,'all.csv')
  }
- setMsg('exported csv')
+
+ print('exported')
 }
 
 function download(csv,name){
- const blob=new Blob([csv],{type:'text/csv'})
- const url=URL.createObjectURL(blob)
+ const blob=new Blob([csv])
  const a=document.createElement('a')
- a.href=url
+ a.href=URL.createObjectURL(blob)
  a.download=name
  a.click()
- URL.revokeObjectURL(url)
 }
 
 function group(data){
@@ -188,79 +222,50 @@ function group(data){
 
 function stats(data){
  const g=group(data), t=today()
- let arr=[]
- Object.keys(g).forEach(name=>{
-  const dates=Object.keys(g[name]).sort().reverse()
-  arr.push({name,dates,g})
- })
- arr.sort((a,b)=>b.dates[0].localeCompare(a.dates[0]))
- arr=arr.slice(0,5)
- const maxLen=Math.max(...arr.map(x=>x.name.length))
  let out=''
- arr.forEach(x=>{
-  const name=x.name
-  const todayVal=x.g[name][t]||'—'
-  const best=Math.max(...Object.values(x.g[name]))
-  const last=x.dates.find(d=>d!==t)
-  out+=name.padEnd(maxLen+2)+`${todayVal} (best: ${best}${last?`, last: ${x.g[name][last]}`:''})\n`
+ Object.keys(g).forEach(name=>{
+  const todayVal=g[name][t]||'—'
+  const best=Math.max(...Object.values(g[name]))
+  out+=`${name} ${todayVal} (best:${best})\n`
  })
  document.getElementById('stats').textContent=out
-}
-
-function buildDays(data){
- const m={}
- data.forEach(r=>{
-  if(!m[r.date]) m[r.date]={}
-  if(!m[r.date][r.name]) m[r.date][r.name]=0
-  m[r.date][r.name]+=r.value
- })
- return m
 }
 
 function heatmap(data){
  const div=document.getElementById('heatmap')
  div.innerHTML=''
- const m=buildDays(data)
- let start=new Date('2026-03-24'), end=new Date()
- while(start.getDay()!==1) start.setDate(start.getDate()-1)
- let cur=new Date(start)
- while(cur<=end){
-  const col=document.createElement('div')
-  col.className='week'
-  for(let i=0;i<7;i++){
-   const d=new Date(cur)
-   const key=d.toISOString().slice(0,10)
-   const el=document.createElement('div')
-   el.className='cell'+(m[key]?' active':'')
-   el.tabIndex=0
-   el.onmouseenter=e=>showTip(e,key,m[key])
-   el.onmouseleave=hideTip
-   el.onfocus=e=>showTip(e,key,m[key])
-   el.onblur=hideTip
-   col.appendChild(el)
-   cur.setDate(cur.getDate()+1)
-  }
-  div.appendChild(col)
+ const days={}
+ data.forEach(r=>days[r.date]=true)
+
+ let d=new Date('2026-03-24'), end=new Date()
+ while(d<=end){
+  const el=document.createElement('div')
+  el.className='cell'+(days[d.toISOString().slice(0,10)]?' active':'')
+  div.appendChild(el)
+  d.setDate(d.getDate()+1)
  }
 }
 
-function showTip(e,date,data){
- tooltip.style.display='block'
- tooltip.style.left=e.pageX+10+'px'
- tooltip.style.top=e.pageY+10+'px'
- let txt=date
- if(data) Object.keys(data).forEach(k=>txt+=`\n${k} ${data[k]}   x`)
- tooltip.textContent=txt
+function processWeights(weights){
+ const map={}
+ weights.forEach(w=>map[w.date]=w) // latest wins
+ return Object.values(map)
 }
-function hideTip(){ tooltip.style.display='none' }
 
 function chart(weights){
- const c=document.getElementById('chart'), ctx=c.getContext('2d')
+ weights=processWeights(weights)
+
+ const c=document.getElementById('chart')
+ const ctx=c.getContext('2d')
  ctx.clearRect(0,0,c.width,c.height)
+
  if(weights.length<2) return
+
  weights.sort((a,b)=>new Date(a.date)-new Date(b.date))
+
  const vals=weights.map(w=>w.value)
  const min=Math.min(...vals), max=Math.max(...vals)
+
  ctx.beginPath()
  weights.forEach((w,i)=>{
   const x=i*(c.width/(weights.length-1))
@@ -268,29 +273,22 @@ function chart(weights){
   if(i===0) ctx.moveTo(x,y)
   else ctx.lineTo(x,y)
  })
+
  ctx.strokeStyle='#60a5fa'
  ctx.stroke()
 }
 
-function feedback(data,ex,val,date){
- const name=map[ex]||ex
- const g=group(data)
- const total=g[name][date]
- if(date===today()) setMsg(`→ +${val} ${name.toLowerCase()} (today: ${total})`)
- else setMsg(`→ +${val} ${name.toLowerCase()} (${date} total: ${total})`)
-}
-
-async function load(showFeedback=false,ex,val,date){
- const {data}=await sb.from('workouts').select('name,value,date').order('date',{ascending:false})
+async function load(){
+ const {data}=await sb.from('workouts').select('name,value,date')
  const {data:weights}=await sb.from('weights').select('value,date')
+
  stats(data||[])
  heatmap(data||[])
  chart(weights||[])
- if(showFeedback) feedback(data,ex,val,date)
 }
 
-function render(){ inputUI(); load() }
-render()
+cmd.focus()
+load()
 </script>
 </body>
 </html>
