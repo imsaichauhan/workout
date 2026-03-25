@@ -1,27 +1,18 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
-body{
-  background:#000;color:#d1d5db;
-  font-family:monospace;
-  max-width:720px;margin:40px auto;
-  user-select:text;
-}
-#heatmap{margin-top:16px}
-#stats{margin-top:16px;white-space:pre}
-#terminal{margin-top:24px}
+body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto}
+#log{white-space:pre-wrap;cursor:text}
 #line{display:flex}
 #prompt{margin-right:6px}
 input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;flex:1}
-#log{white-space:pre-wrap;cursor:text}
 .cell{width:10px;height:10px;margin:2px;background:#111;display:inline-block}
 .cell.active{background:#22c55e}
-.tooltip{position:absolute;background:#000;color:#d1d5db;font-size:12px;padding:6px;white-space:pre}
+.tooltip{position:absolute;background:#000;padding:6px;white-space:pre}
 .err{color:#ef4444}
 </style>
 </head>
@@ -38,271 +29,220 @@ input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit
 <div id="tooltip" class="tooltip" style="display:none"></div>
 
 <script>
-const SUPABASE_URL='https://ptlccumwheypalpvbhms.supabase.co'
-const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0bGNjdW13aGV5cGFscHZiaG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDY4MzQsImV4cCI6MjA5MDAyMjgzNH0.LkvF84QWKntY4-3YHtBvN_ygRsn4QJleFuA5pnpwsvU'
+const sb=supabase.createClient(
+'https://ptlccumwheypalpvbhms.supabase.co',
+'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0bGNjdW13aGV5cGFscHZiaG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDY4MzQsImV4cCI6MjA5MDAyMjgzNH0.LkvF84QWKntY4-3YHtBvN_ygRsn4QJleFuA5pnpwsvU'
+)
+
 const PASSWORD='mubi'
+const map={pu:'Push-ups',sq:'Squats'}
 
-const map={pu:'Push-ups',sq:'Squats',cr:'Crunches',pl:'Plank'}
-const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY)
-
-let auth=localStorage.getItem('auth')==='true'
-let awaitingPassword=false
+let auth=false, awaitingPassword=false
+let history=[],hIndex=0
+let weightsMap={}
 
 const logEl=document.getElementById('log')
 const cmd=document.getElementById('cmd')
 const tooltip=document.getElementById('tooltip')
 
-let weightsMap={}
-
-// ✅ LOCAL DATE FIX (robust)
 function today(){
-  const d = new Date()
-  const offset = d.getTimezoneOffset()
-  const local = new Date(d.getTime() - offset*60000)
-  return local.toISOString().slice(0,10)
+ const d=new Date()
+ const y=d.getFullYear()
+ const m=String(d.getMonth()+1).padStart(2,'0')
+ const day=String(d.getDate()).padStart(2,'0')
+ return `${y}-${m}-${day}`
 }
 
 function print(t,c){
-  const d=document.createElement('div')
-  if(c)d.className=c
-  d.textContent=t
-  logEl.appendChild(d)
+ const d=document.createElement('div')
+ if(c)d.className=c
+ d.textContent=t
+ logEl.appendChild(d)
 }
 
 function setPrompt(p){document.getElementById('prompt').textContent=p}
 
-// ---------- SPARKLINE ----------
-function sparkline(data){
-  if(data.length<2) return ''
-  const chars='▁▂▃▄▅▆▇█'
-  const vals=data.map(d=>d.value)
-  const min=Math.min(...vals), max=Math.max(...vals)
-
-  return data.map(d=>{
-    if(max===min) return '▅'
-    const i=Math.floor((d.value-min)/(max-min)*(chars.length-1))
-    return chars[i]
-  }).join('')
-}
-
-// ---------- WORKOUT ----------
-async function upsertWorkout(ex,val,date,append){
-  const name=map[ex]||ex
-  if(append){
-    await sb.from('workouts').insert([{name_raw:ex,name,value:val,date}])
-  } else {
-    await sb.from('workouts').delete().eq('name',name).eq('date',date)
-    await sb.from('workouts').insert([{name_raw:ex,name,value:val,date}])
-  }
-}
-
 // ---------- COMMAND ----------
 async function run(input){
 
-  if(awaitingPassword){
-    if(input===PASSWORD){
-      auth=true
-      localStorage.setItem('auth','true')
-      print('logged in')
-      setPrompt('>')
-    } else {
-      print('denied','err')
-      setPrompt('(guest)>')
-    }
-    awaitingPassword=false
-    cmd.type='text'
-    return
+ if(awaitingPassword){
+  if(input===PASSWORD){
+   auth=true
+   print('logged in')
+   setPrompt('>')
+  } else {
+   print('denied','err')
+   setPrompt('(guest)>')
+  }
+  awaitingPassword=false
+  cmd.type='text'
+  return
+ }
+
+ print('> '+input)
+
+ const p=input.trim().split(' ')
+ const c=p[0]
+
+ if(c==='login'){
+  awaitingPassword=true
+  cmd.type='password'
+  setPrompt('password>')
+  return
+ }
+
+ if(c==='w'){
+  if(!auth) return print('login required','err')
+
+  let ex=p[1]
+  let raw=p[2]
+  let append=false
+
+  if(raw==='+' ){append=true;raw=p[3]}
+  else if(raw?.startsWith('+')){append=true;raw=raw.slice(1)}
+
+  let val=parseInt(raw)
+  let date=today()
+
+  if(!val) return print('× invalid','err')
+
+  const name=map[ex]||ex
+
+  if(!append){
+   await sb.from('workouts').delete().eq('name',name).eq('date',date)
   }
 
-  print('> '+input)
-  const p=input.trim().split(' ')
-  const c=p[0]
+  await sb.from('workouts').insert([{name,value:val,date}])
 
-  if(c==='login'){
-    awaitingPassword=true
-    cmd.type='password'
-    setPrompt('password>')
-    return
-  }
+  print(`${append?'+':''}${val} ${name}`)
+ }
 
-  if(c==='logout'){
-    auth=false
-    localStorage.removeItem('auth')
-    setPrompt('(guest)>')
-    print('logged out')
-    return
-  }
+ if(c==='wt'){
+  let val=parseFloat(p[1])
+  await sb.from('weights').insert([{value:val,date:today()}])
+  print(`${val} kg`)
+ }
 
-  if(c==='help'){
-    print('w <ex> <n> → replace')
-    print('w <ex> + <n> → append')
-    print('wt <n>')
-    print('login/logout/clear')
-    return
-  }
-
-  if(c==='clear'){logEl.innerHTML='';return}
-
-  if(c==='w'){
-    if(!auth) return print('login required','err')
-
-    let ex=p[1]
-    let raw=p[2]
-    let append=false
-
-    if(raw==='+' ){append=true;raw=p[3]}
-    else if(raw?.startsWith('+')){append=true;raw=raw.slice(1)}
-
-    let val=parseInt(raw)
-    let date = today()
-
-    if(!val) return print('× invalid','err')
-
-    await upsertWorkout(ex,val,date,append)
-    print(`${append?'+':''}${val} ${map[ex]||ex}`)
-  }
-
-  else if(c==='wt'){
-    if(!auth) return print('login required','err')
-    let val=parseFloat(p[1])
-    if(!val) return print('× invalid','err')
-    await sb.from('weights').insert([{value:val,date:today()}])
-    print(`${val} kg`)
-  }
-
-  load()
+ await load() // 🔥 ensures fresh UI
 }
 
-// ---------- STATS ----------
-function aggregate(data){
-  const g={}
-  data.forEach(r=>{
-    if(!g[r.name])g[r.name]={}
-    if(!g[r.name][r.date])g[r.name][r.date]=0
-    g[r.name][r.date]+=r.value
-  })
-  return g
-}
+// ---------- HISTORY ----------
+cmd.onkeydown=e=>{
+ if(e.key==='Enter'){
+  history.push(cmd.value)
+  hIndex=history.length
+  run(cmd.value)
+  cmd.value=''
+ }
 
-function processWeights(weights){
-  const m={}
-  weights.forEach(w=>m[w.date]=w.value)
-  weightsMap=m
-  return Object.keys(m)
-    .sort()
-    .map(d=>({date:d,value:m[d]}))
-}
+ if(e.key==='ArrowUp'){
+  hIndex=Math.max(0,hIndex-1)
+  cmd.value=history[hIndex]||''
+  e.preventDefault()
+ }
 
-function stats(data,weights){
-  const g=aggregate(data)
-  const t=today()
-  let out=''
-
-  Object.keys(g).forEach(name=>{
-    const dates=Object.keys(g[name]).sort().reverse()
-    const todayVal=g[name][t]||'—'
-    const best=Math.max(...Object.values(g[name]))
-    const lastDate=dates.find(d=>d!==t)
-    const lastVal=lastDate?g[name][lastDate]:null
-
-    out+=`${name} ${todayVal} (best:${best}${lastVal?`, last:${lastVal}`:''})\n`
-  })
-
-  if(weights.length){
-    const last=weights[weights.length-1]
-    const prev=weights[weights.length-2]
-    const delta=prev ? last.value-prev.value : 0
-
-    const recent=weights.slice(-7)
-    const spark=sparkline(recent)
-
-    out+=`wt ${last.value}kg (${delta>=0?'+':''}${delta}) ${spark}`
-  }
-
-  document.getElementById('stats').textContent=out
+ if(e.key==='ArrowDown'){
+  hIndex=Math.min(history.length,hIndex+1)
+  cmd.value=history[hIndex]||''
+  e.preventDefault()
+ }
 }
 
 // ---------- HEATMAP ----------
 function heatmap(data){
-  const div=document.getElementById('heatmap');div.innerHTML=''
-  const mapDay={}
-  data.forEach(r=>{
-    if(!mapDay[r.date])mapDay[r.date]=[]
-    mapDay[r.date].push(r)
-  })
+ const div=document.getElementById('heatmap')
+ div.innerHTML=''
 
-  let d=new Date('2026-03-24'),end=new Date()
-  while(d<=end){
-    const key=todayFromDate(d)
+ const mapDay={}
+ data.forEach(r=>{
+  if(!mapDay[r.date])mapDay[r.date]=[]
+  mapDay[r.date].push(r)
+ })
 
-    const el=document.createElement('div')
-    el.className='cell'+(mapDay[key]?' active':'')
+ let d=new Date('2026-03-24'),end=new Date()
 
-    el.onmouseenter=e=>{
-      tooltip.style.display='block'
-      tooltip.style.left=e.pageX+10+'px'
-      tooltip.style.top=e.pageY+10+'px'
+ while(d<=end){
+  const key=format(d)
+  const el=document.createElement('div')
+  el.className='cell'+(mapDay[key]?' active':'')
 
-      let txt=key
+  el.onmouseenter=e=>{
+   tooltip.style.display='block'
+   tooltip.style.left=e.pageX+10+'px'
+   tooltip.style.top=e.pageY+10+'px'
 
-      // workouts
-      if(mapDay[key]){
-        const agg={}
-        mapDay[key].forEach(x=>{
-          if(!agg[x.name])agg[x.name]=0
-          agg[x.name]+=x.value
-        })
-        Object.keys(agg).forEach(k=>txt+=`\n${k} ${agg[k]}`)
-      }
+   let txt=key
 
-      // weights FULL LIST
-      const weightEntries=Object.entries(weightsMap)
-        .sort()
-        .map(([d,v])=>`${d} → ${v}kg`)
-      if(weightEntries.length){
-        txt+=`\n\nweights:\n`+weightEntries.join('\n')
-      }
+   if(mapDay[key]){
+    mapDay[key].forEach(x=>txt+=`\n${x.name} ${x.value}`)
+   }
 
-      tooltip.textContent=txt
-    }
+   // ✅ FIX: only this day's weight
+   if(weightsMap[key]) txt+=`\nwt ${weightsMap[key]} kg`
 
-    el.onmouseleave=()=>tooltip.style.display='none'
-
-    div.appendChild(el)
-    d.setDate(d.getDate()+1)
+   tooltip.textContent=txt
   }
+
+  el.onmouseleave=()=>tooltip.style.display='none'
+
+  div.appendChild(el)
+  d.setDate(d.getDate()+1)
+ }
 }
 
-// helper for heatmap (local safe)
-function todayFromDate(d){
-  const dt=new Date(d)
-  const y=dt.getFullYear()
-  const m=String(dt.getMonth()+1).padStart(2,'0')
-  const day=String(dt.getDate()).padStart(2,'0')
-  return `${y}-${m}-${day}`
+function format(d){
+ const y=d.getFullYear()
+ const m=String(d.getMonth()+1).padStart(2,'0')
+ const day=String(d.getDate()).padStart(2,'0')
+ return `${y}-${m}-${day}`
+}
+
+// ---------- STATS ----------
+function stats(data,weights){
+ const g={}
+ data.forEach(r=>{
+  if(!g[r.name])g[r.name]={}
+  if(!g[r.name][r.date])g[r.name][r.date]=0
+  g[r.name][r.date]+=r.value
+ })
+
+ let out=''
+
+ Object.keys(g).forEach(name=>{
+  const vals=Object.values(g[name])
+  out+=`${name} (best:${Math.max(...vals)})\n`
+ })
+
+ if(weights.length){
+  const last=weights.at(-1)
+  out+=`wt ${last.value}kg`
+ }
+
+ document.getElementById('stats').textContent=out
 }
 
 // ---------- LOAD ----------
 async function load(){
-  const {data}=await sb.from('workouts').select('name,value,date')
-  const {data:weightsRaw}=await sb.from('weights').select('value,date')
+ const {data}=await sb.from('workouts').select('*')
+ const {data:weightsRaw}=await sb.from('weights').select('*')
 
-  const weights=processWeights(weightsRaw||[])
+ const weights=[]
+ weightsMap={}
 
-  heatmap(data||[])
-  stats(data||[],weights||[])
+ weightsRaw.forEach(w=>{
+  weightsMap[w.date]=w.value
+  weights.push(w)
+ })
+
+ heatmap(data||[])
+ stats(data||[],weights||[])
 }
 
 // ---------- INIT ----------
-cmd.onkeydown=e=>{
-  if(e.key==='Enter'){
-    run(cmd.value)
-    cmd.value=''
-  }
-}
-
+setPrompt('(guest)>')
+cmd.focus()
 setInterval(()=>cmd.focus(),500)
-setPrompt(auth?'>':'(guest)>')
+
 load()
 </script>
 </body>
