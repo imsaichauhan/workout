@@ -7,22 +7,25 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 body{background:#000;color:#d1d5db;font-family:monospace;max-width:720px;margin:40px auto}
-#line{display:flex}
+#log{white-space:pre-wrap}
+#line{display:flex;margin-top:24px}
 #prompt{margin-right:6px}
 input{background:none;border:none;outline:none;color:#d1d5db;font-family:inherit;flex:1}
-#log{white-space:pre-wrap}
 .cell{width:10px;height:10px;margin:2px;background:#111;display:inline-block}
 .cell.active{background:#22c55e}
 .tooltip{position:absolute;background:#000;color:#d1d5db;font-size:12px;padding:6px;white-space:pre}
 .err{color:#ef4444}
+#stats{margin-top:24px;white-space:pre}
+#chart{margin-top:24px}
 </style>
 </head>
 <body>
+
 <div id="log"></div>
-<div id="line"><span id="prompt">></span><input id="cmd"></div>
 <div id="heatmap"></div>
 <div id="stats"></div>
 <canvas id="chart" width="720" height="120"></canvas>
+<div id="line"><span id="prompt">(guest)></span><input id="cmd"></div>
 <div id="tooltip" class="tooltip" style="display:none"></div>
 
 <script>
@@ -43,17 +46,19 @@ const tooltip=document.getElementById('tooltip')
 let history=[],hIndex=0
 let weightsMap={}
 
-function print(t,c){const d=document.createElement('div');if(c)d.className=c;d.textContent=t;logEl.appendChild(d);window.scrollTo(0,document.body.scrollHeight)}
+function print(t,c){const d=document.createElement('div');if(c)d.className=c;d.textContent=t;logEl.appendChild(d)}
 function today(){return new Date().toISOString().slice(0,10)}
 function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
+
+function setPrompt(p){document.getElementById('prompt').textContent=p}
 
 async function run(input){
 
  if(awaitingPassword){
-  // DO NOT print password input
-  if(input===PASSWORD){auth=true;localStorage.setItem('auth','true');print('logged in')}
+  if(input===PASSWORD){auth=true;localStorage.setItem('auth','true');print('logged in');setPrompt('>')}
   else print('denied','err')
   awaitingPassword=false
+  cmd.type='text'
   return
  }
 
@@ -61,25 +66,10 @@ async function run(input){
  const p=input.trim().split(' ')
  const c=p[0]
 
- if(c==='login'){
-  awaitingPassword=true
-  print('password: (hidden)')
-  cmd.type='password'
-  return
- }
+ if(c==='login'){awaitingPassword=true;cmd.type='password';setPrompt('password>');return}
+ if(c==='logout'){auth=false;localStorage.removeItem('auth');setPrompt('(guest)>');print('logged out');return}
 
- if(c==='logout'){
-  auth=false
-  localStorage.removeItem('auth')
-  print('logged out')
-  return
- }
-
- if(c==='help'){
-  print('commands: login logout w wt p s exp clear help')
-  return
- }
-
+ if(c==='help'){print('login logout w wt p s exp clear help');return}
  if(c==='clear'){logEl.innerHTML='';return}
 
  if(c==='w'){
@@ -103,38 +93,20 @@ async function run(input){
  else if(c==='s'){await run(`w sq ${p[1]} ${p[2]||''}`);return}
 
  else if(c==='exp'){await exportCSV(p[1])}
-
  else print('× invalid','err')
-
- // restore input type after password entry
- cmd.type='text'
 
  load()
 }
 
 cmd.onkeydown=async e=>{
- if(e.key==='Enter'){
-  const v=cmd.value
-  history.push(v);hIndex=history.length
-  await run(v)
-  cmd.value=''
- }
+ if(e.key==='Enter'){const v=cmd.value;history.push(v);hIndex=history.length;await run(v);cmd.value=''}
  if(e.key==='ArrowUp'){hIndex=Math.max(0,hIndex-1);cmd.value=history[hIndex]||'';e.preventDefault()}
  if(e.key==='ArrowDown'){hIndex=Math.min(history.length,hIndex+1);cmd.value=history[hIndex]||'';e.preventDefault()}
  if(e.ctrlKey&&e.key==='l'){logEl.innerHTML='';e.preventDefault()}
 }
 
-async function exportCSV(q){
- const {data:w}=await sb.from('workouts').select('name,value,date')
- const {data:wt}=await sb.from('weights').select('value,date')
- let csv='type,name,value,date\n'
- ;(w||[]).forEach(r=>csv+=`workout,${r.name},${r.value},${r.date}\n`)
- ;(wt||[]).forEach(r=>csv+=`weight,,${r.value},${r.date}\n`)
- const blob=new Blob([csv]);const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click()
- print('exported')
-}
+setInterval(()=>cmd.focus(),500)
 
-// FIX: aggregate workouts per day per exercise
 function aggregate(data){
  const g={}
  data.forEach(r=>{
@@ -145,14 +117,37 @@ function aggregate(data){
  return g
 }
 
+function stats(data,weights){
+ const g=aggregate(data)
+ const t=today()
+ let out=''
+
+ Object.keys(g).forEach(name=>{
+  const dates=Object.keys(g[name]).sort().reverse()
+  const todayVal=g[name][t]||'—'
+  const best=Math.max(...Object.values(g[name]))
+  const lastDate=dates.find(d=>d!==t)
+  const lastVal=lastDate?g[name][lastDate]:null
+
+  out+=`${name} ${todayVal} (best:${best}${lastVal?`, last:${lastVal}`:''})\n`
+ })
+
+ if(weights.length){out+=`weight ${weights[weights.length-1].value} kg`}
+
+ document.getElementById('stats').textContent=out
+}
+
+function processWeights(weights){
+ const m={}
+ weights.forEach(w=>m[w.date]=w.value)
+ weightsMap=m
+ return Object.keys(m).map(d=>({date:d,value:m[d]}))
+}
+
 function heatmap(data){
  const div=document.getElementById('heatmap');div.innerHTML=''
  const mapDay={}
- data.forEach(r=>{
-  if(!mapDay[r.date])mapDay[r.date]=[]
-  mapDay[r.date].push(r)
- })
-
+ data.forEach(r=>{if(!mapDay[r.date])mapDay[r.date]=[];mapDay[r.date].push(r)})
  let d=new Date('2026-03-24'),end=new Date()
  while(d<=end){
   const key=d.toISOString().slice(0,10)
@@ -163,41 +158,18 @@ function heatmap(data){
    tooltip.style.left=e.pageX+10+'px'
    tooltip.style.top=e.pageY+10+'px'
    let txt=key
-
    if(mapDay[key]){
-    const dayAgg={}
-    mapDay[key].forEach(x=>{
-      if(!dayAgg[x.name])dayAgg[x.name]=0
-      dayAgg[x.name]+=x.value
-    })
-    Object.keys(dayAgg).forEach(k=>txt+=`\n${k} ${dayAgg[k]}`)
+    const agg={}
+    mapDay[key].forEach(x=>{if(!agg[x.name])agg[x.name]=0;agg[x.name]+=x.value})
+    Object.keys(agg).forEach(k=>txt+=`\n${k} ${agg[k]}`)
    }
-
-   if(weightsMap[key])txt+=`\nwt ${weightsMap[key]}`
+   if(weightsMap[key])txt+=`\nwt ${weightsMap[key]} kg`
    tooltip.textContent=txt
   }
   el.onmouseleave=()=>tooltip.style.display='none'
   div.appendChild(el)
   d.setDate(d.getDate()+1)
  }
-}
-
-function stats(data,weights){
- const g=aggregate(data)
- let out=''
- Object.keys(g).forEach(name=>{
-  const vals=Object.values(g[name])
-  out+=`${name} (best:${Math.max(...vals)})\n`
- })
- if(weights.length){out+=`weight ${weights[weights.length-1].value}`}
- document.getElementById('stats').textContent=out
-}
-
-function processWeights(weights){
- const m={}
- weights.forEach(w=>m[w.date]=w.value)
- weightsMap=m
- return Object.keys(m).map(d=>({date:d,value:m[d]}))
 }
 
 function chart(weights){
@@ -217,6 +189,9 @@ function chart(weights){
  })
  ctx.strokeStyle='#60a5fa'
  ctx.stroke()
+ ctx.fillStyle='#9ca3af'
+ ctx.fillText(min+' kg',0,c.height-2)
+ ctx.fillText(max+' kg',0,10)
 }
 
 async function load(){
