@@ -48,7 +48,9 @@ function today(){return new Date().toISOString().slice(0,10)}
 function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
 
 async function run(input){
+
  if(awaitingPassword){
+  // DO NOT print password input
   if(input===PASSWORD){auth=true;localStorage.setItem('auth','true');print('logged in')}
   else print('denied','err')
   awaitingPassword=false
@@ -59,8 +61,19 @@ async function run(input){
  const p=input.trim().split(' ')
  const c=p[0]
 
- if(c==='login'){awaitingPassword=true;print('password:');return}
- if(c==='logout'){auth=false;localStorage.removeItem('auth');print('logged out');return}
+ if(c==='login'){
+  awaitingPassword=true
+  print('password: (hidden)')
+  cmd.type='password'
+  return
+ }
+
+ if(c==='logout'){
+  auth=false
+  localStorage.removeItem('auth')
+  print('logged out')
+  return
+ }
 
  if(c==='help'){
   print('commands: login logout w wt p s exp clear help')
@@ -93,6 +106,9 @@ async function run(input){
 
  else print('× invalid','err')
 
+ // restore input type after password entry
+ cmd.type='text'
+
  load()
 }
 
@@ -118,10 +134,25 @@ async function exportCSV(q){
  print('exported')
 }
 
+// FIX: aggregate workouts per day per exercise
+function aggregate(data){
+ const g={}
+ data.forEach(r=>{
+  if(!g[r.name])g[r.name]={}
+  if(!g[r.name][r.date])g[r.name][r.date]=0
+  g[r.name][r.date]+=r.value
+ })
+ return g
+}
+
 function heatmap(data){
  const div=document.getElementById('heatmap');div.innerHTML=''
  const mapDay={}
- data.forEach(r=>{if(!mapDay[r.date])mapDay[r.date]=[];mapDay[r.date].push(r)})
+ data.forEach(r=>{
+  if(!mapDay[r.date])mapDay[r.date]=[]
+  mapDay[r.date].push(r)
+ })
+
  let d=new Date('2026-03-24'),end=new Date()
  while(d<=end){
   const key=d.toISOString().slice(0,10)
@@ -132,7 +163,16 @@ function heatmap(data){
    tooltip.style.left=e.pageX+10+'px'
    tooltip.style.top=e.pageY+10+'px'
    let txt=key
-   if(mapDay[key])mapDay[key].forEach(x=>txt+=`\n${x.name} ${x.value}`)
+
+   if(mapDay[key]){
+    const dayAgg={}
+    mapDay[key].forEach(x=>{
+      if(!dayAgg[x.name])dayAgg[x.name]=0
+      dayAgg[x.name]+=x.value
+    })
+    Object.keys(dayAgg).forEach(k=>txt+=`\n${k} ${dayAgg[k]}`)
+   }
+
    if(weightsMap[key])txt+=`\nwt ${weightsMap[key]}`
    tooltip.textContent=txt
   }
@@ -143,12 +183,7 @@ function heatmap(data){
 }
 
 function stats(data,weights){
- const g={}
- data.forEach(r=>{
-  if(!g[r.name])g[r.name]={}
-  if(!g[r.name][r.date])g[r.name][r.date]=0
-  g[r.name][r.date]+=r.value
- })
+ const g=aggregate(data)
  let out=''
  Object.keys(g).forEach(name=>{
   const vals=Object.values(g[name])
