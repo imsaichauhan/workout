@@ -64,7 +64,7 @@ input{
 
 <script>
 const SUPABASE_URL='https://ptlccumwheypalpvbhms.supabase.co'
-const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0bGNjdW13aGV5cGFscHZiaG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDY4MzQsImV4cCI6MjA5MDAyMjgzNH0.LkvF84QWKntY4-3YHtBvN_ygRsn4QJleFuA5pnpwsvU'
+const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
 const PASSWORD='mubi'
 
 const map={pu:'Push-ups',sq:'Squats',cr:'Crunches',pl:'Plank'}
@@ -89,7 +89,7 @@ function print(t,c){
   document.getElementById('terminal').scrollTop=logEl.scrollHeight
 }
 
-// ✅ unified local date
+// ---------- DATE ----------
 function formatDate(d){
   const dt=new Date(d)
   const y=dt.getFullYear()
@@ -98,8 +98,17 @@ function formatDate(d){
   return `${y}-${m}-${day}`
 }
 
+// ✅ timezone-safe today (India-safe)
 function today(){
-  return formatDate(new Date())
+  const d = new Date()
+  const offset = d.getTimezoneOffset()
+  const local = new Date(d.getTime() - offset*60000)
+  return local.toISOString().slice(0,10)
+}
+
+// ✅ safe constructor (no UTC bug)
+function makeDate(y,m,d){
+  return new Date(y, m-1, d)
 }
 
 function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
@@ -211,7 +220,7 @@ async function run(input){
 
   else print('× invalid','err')
 
-  await load() // ✅ ensure fresh data
+  await load()
 }
 
 // ---------- stats ----------
@@ -270,9 +279,11 @@ function heatmap(data){
     mapDay[r.date].push(r)
   })
 
-  let d=new Date('2026-03-24'),end=new Date()
+  let d = makeDate(2026,3,24)
+  let end = new Date()
+
   while(d<=end){
-    const key=formatDate(d) // ✅ FIXED
+    const key=formatDate(new Date(d))
 
     const el=document.createElement('div')
     el.className='cell'+(mapDay[key]?' active':'')
