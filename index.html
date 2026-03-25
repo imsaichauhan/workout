@@ -89,12 +89,17 @@ function print(t,c){
   document.getElementById('terminal').scrollTop=logEl.scrollHeight
 }
 
-// ✅ robust local date (timezone safe)
+// ✅ unified local date
+function formatDate(d){
+  const dt=new Date(d)
+  const y=dt.getFullYear()
+  const m=String(dt.getMonth()+1).padStart(2,'0')
+  const day=String(dt.getDate()).padStart(2,'0')
+  return `${y}-${m}-${day}`
+}
+
 function today(){
-  const d=new Date()
-  const offset=d.getTimezoneOffset()
-  const local=new Date(d.getTime()-offset*60000)
-  return local.toISOString().slice(0,10)
+  return formatDate(new Date())
 }
 
 function validDate(d){return /^\d{4}-\d{2}-\d{2}$/.test(d)}
@@ -206,29 +211,8 @@ async function run(input){
 
   else print('× invalid','err')
 
-  load()
+  await load() // ✅ ensure fresh data
 }
-
-cmd.onkeydown=async e=>{
-  if(e.key==='Enter'){
-    const v=cmd.value
-    history.push(v);hIndex=history.length
-    await run(v)
-    cmd.value=''
-  }
-  if(e.key==='ArrowUp'){
-    hIndex=Math.max(0,hIndex-1)
-    cmd.value=history[hIndex]||''
-    e.preventDefault()
-  }
-  if(e.key==='ArrowDown'){
-    hIndex=Math.min(history.length,hIndex+1)
-    cmd.value=history[hIndex]||''
-    e.preventDefault()
-  }
-}
-
-setInterval(()=>cmd.focus(),500)
 
 // ---------- stats ----------
 function aggregate(data){
@@ -254,9 +238,11 @@ function stats(data,weights){
   let out=''
 
   Object.keys(g).forEach(name=>{
+    const vals=Object.values(g[name])
+    const best=vals.length ? Math.max(...vals) : 0
+
     const dates=Object.keys(g[name]).sort().reverse()
     const todayVal=g[name][t]||'—'
-    const best=Math.max(...Object.values(g[name]))
     const lastDate=dates.find(d=>d!==t)
     const lastVal=lastDate?g[name][lastDate]:null
 
@@ -267,8 +253,7 @@ function stats(data,weights){
     const last=weights.at(-1)
     const prev=weights.at(-2)
     const delta=prev ? last.value-prev.value : 0
-    const recent=weights.slice(-7)
-    const spark=sparkline(recent)
+    const spark=sparkline(weights.slice(-7))
 
     out+=`wt ${last.value}kg (${delta>=0?'+':''}${delta}) ${spark}`
   }
@@ -287,7 +272,8 @@ function heatmap(data){
 
   let d=new Date('2026-03-24'),end=new Date()
   while(d<=end){
-    const key=d.toISOString().slice(0,10)
+    const key=formatDate(d) // ✅ FIXED
+
     const el=document.createElement('div')
     el.className='cell'+(mapDay[key]?' active':'')
 
@@ -327,8 +313,30 @@ async function load(){
   stats(data||[],weights||[])
 }
 
+// ---------- init ----------
 setPrompt(auth?'>':'(guest)>')
 cmd.focus()
+setInterval(()=>cmd.focus(),500)
+
+cmd.onkeydown=async e=>{
+  if(e.key==='Enter'){
+    const v=cmd.value
+    history.push(v);hIndex=history.length
+    await run(v)
+    cmd.value=''
+  }
+  if(e.key==='ArrowUp'){
+    hIndex=Math.max(0,hIndex-1)
+    cmd.value=history[hIndex]||''
+    e.preventDefault()
+  }
+  if(e.key==='ArrowDown'){
+    hIndex=Math.min(history.length,hIndex+1)
+    cmd.value=history[hIndex]||''
+    e.preventDefault()
+  }
+}
+
 load()
 </script>
 </body>
