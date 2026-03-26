@@ -237,8 +237,23 @@ const SUPABASE_URL = 'https://ptlccumwheypalpvbhms.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0bGNjdW13aGV5cGFscHZiaG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDY4MzQsImV4cCI6MjA5MDAyMjgzNH0.LkvF84QWKntY4-3YHtBvN_ygRsn4QJleFuA5pnpwsvU';
 const PASSWORD = 'mubi';
 
-// default exercises
-const defaultMap = { pu:'Push-ups', sq:'Squats', cr:'Crunches', pl:'Plank' };
+// default exercises (including plan exercises)
+const defaultMap = {
+  pu: 'Push-ups',
+  sq: 'Squats',
+  cr: 'Crunches',
+  pl: 'Plank',
+  db: 'Dead Bug',
+  lu: 'Lunges',
+  cd: 'Chair dips',
+  gb: 'Glute bridge',
+  lr: 'Leg Raises',
+  st: 'Step-ups',
+  ip: 'Incline push-ups',
+  sm: 'Superman',
+  mc: 'Mountain climbers'
+};
+
 let customExercises = {};
 try {
   const stored = localStorage.getItem('customExercises');
@@ -282,7 +297,7 @@ try {
 
 let currentAbortController = null;
 
-// ---------- INDEXEDDB (no compound key – we store aggregated rows, but we'll maintain uniqueness ourselves) ----------
+// ---------- INDEXEDDB ----------
 const db = new Dexie('TrackerDB');
 db.version(1).stores({
   workouts: '++id, name, date, value, name_raw',
@@ -511,8 +526,7 @@ async function performPull(abortSignal) {
   return success;
 }
 
-// --- Core data operations (using upsert via put for workouts) ---
-// Since we no longer have a compound key, we manually delete existing entry for (name,date) before adding.
+// --- Core data operations (using upsert via delete+add for workouts) ---
 async function storeWorkout(ex, val, date, append = false, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
   const name = map[ex] || ex;
@@ -814,6 +828,44 @@ async function setHeatmapStart(date) {
   await loadFromLocal();
 }
 
+function listExercises() {
+  // Combine default and custom, sort by shortcode
+  const all = { ...defaultMap, ...customExercises };
+  const sorted = Object.keys(all).sort();
+  print('--- EXERCISE SHORTCODES ---');
+  for (const code of sorted) {
+    print(`${code} → ${all[code]}`);
+  }
+  print('\nUse: w <shortcode> <value> [date]');
+}
+
+function workoutPlan() {
+  print(`
+--- 3-DAY BODYWEIGHT PLAN (BEGINNER) ---
+
+Day 1
+Squats (sq) - 3 x 10-12
+Push-ups (pu) - 3 x 8-10
+Plank (pl) - 3 x 20 sec
+Dead Bug (db) - 2 x 8 per side
+
+Day 2
+Lunges (lu) - 3 x 10 each leg
+Chair dips (cd) - 3 x 8-10
+Glute bridge (gb) - 3 x 12-15
+Leg Raises (lr) - 2 x 8-10
+
+Day 3
+Step-ups (st) - 3 x 10 each leg
+Incline push-ups (ip) - 3 x 8-10
+Superman (sm) - 3 x 10
+Mountain climbers (mc) - 2 x 20 sec
+
+Schedule
+3 non-consecutive days per week
+`);
+}
+
 function tutorial() {
   print(`
 --- TRACKER TUTORIAL ---
@@ -843,6 +895,7 @@ Management commands:
   edit weight <new> [date]
   add-ex <shortcode> <fullname>
   pending           -> show queued offline changes
+  exercises         -> list all available exercise shortcodes
 
 Sync & maintenance:
   push              -> send local changes to server (safe, keeps local data)
@@ -853,6 +906,7 @@ Sync & maintenance:
   export
   help
   clear
+  plan              -> show sample workout plan
 `);
 }
 
@@ -1001,7 +1055,7 @@ function updateAutocompleteSuggestions(input) {
   const words = input.split(' ');
   const lastWord = words[words.length-1];
   if (!lastWord) return [];
-  const allCommands = ['w', 'wt', 'list', 'delete', 'edit', 'add-ex', 'heatmap-start', 'stats', 'export', 'clear', 'help', 'tutorial', 'login', 'logout', 'push', 'pull', 'resync', 'pending'];
+  const allCommands = ['w', 'wt', 'list', 'delete', 'edit', 'add-ex', 'heatmap-start', 'stats', 'export', 'clear', 'help', 'tutorial', 'login', 'logout', 'push', 'pull', 'resync', 'pending', 'plan', 'exercises'];
   const types = ['workout', 'weight'];
   let suggestions = [];
   if (words.length === 1) suggestions = allCommands.filter(c => c.startsWith(lastWord));
@@ -1109,7 +1163,7 @@ async function run(input) {
     'login', 'logout', 'help', 'clear', 'tutorial', 
     'list', 'stats', 'export', 'heatmap-start', 'pull', 
     'push', 'resync', 'pending', 'delete', 'edit', 'add-ex', 
-    'w', 'wt'
+    'w', 'wt', 'plan', 'exercises'
   ]);
 
   if (!allKnownCommands.has(cmdName)) {
@@ -1142,7 +1196,7 @@ async function run(input) {
 --- GUEST COMMANDS (always available) ---
   list workout|weight [--from YYYY-MM-DD] [--to YYYY-MM-DD]
   stats, export, heatmap-start YYYY-MM-DD
-  pull, clear, help, tutorial
+  pull, clear, help, tutorial, plan, exercises
 
 Tip: Press Tab to autocomplete commands and exercise names.
 
@@ -1153,7 +1207,7 @@ Login with 'login' to enable additional commands: w, wt, delete, edit, add-ex, p
 --- GUEST COMMANDS (always available) ---
   list workout|weight [--from YYYY-MM-DD] [--to YYYY-MM-DD]
   stats, export, heatmap-start YYYY-MM-DD
-  pull, clear, help, tutorial
+  pull, clear, help, tutorial, plan, exercises
 
 Tip: Press Tab to autocomplete commands and exercise names.
 
@@ -1171,6 +1225,8 @@ Tip: Press Tab to autocomplete commands and exercise names.
   }
   if (cmdName === 'clear') { logEl.innerHTML = ''; return; }
   if (cmdName === 'tutorial') { tutorial(); return; }
+  if (cmdName === 'plan') { workoutPlan(); return; }
+  if (cmdName === 'exercises') { listExercises(); return; }
 
   // read-only commands (allowed for guests)
   if (cmdName === 'list') {
