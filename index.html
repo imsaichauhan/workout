@@ -63,7 +63,7 @@ body {
 #heatmap {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 2px;
+  gap: 4px;
   vertical-align: middle;
 }
 .cell {
@@ -71,11 +71,14 @@ body {
   height: min(10px, 3vw);
   background: #1a1a1a;
   border-radius: 1px;
-  transition: background 0.1s;
+  transition: background 0.1s, transform 0.05s;
   display: inline-block;
   cursor: pointer;
 }
 .cell.active { background: #22c55e; }
+.cell:active {
+  transform: scale(0.95);
+}
 #terminal {
   background: #0a0a0a;
   border: 1px solid #2a2a2a;
@@ -1065,6 +1068,19 @@ async function run(input) {
   const parts = input.trim().split(' ');
   const cmdName = parts[0];
   const args = parts.slice(1);
+
+  // Set of all known commands (case-insensitive)
+  const allKnownCommands = new Set([
+    'login', 'logout', 'help', 'clear', 'tutorial', 
+    'list', 'stats', 'export', 'heatmap-start', 'pull', 
+    'push', 'resync', 'pending', 'delete', 'edit', 'add-ex', 
+    'w', 'wt'
+  ]);
+
+  if (!allKnownCommands.has(cmdName)) {
+    print('Unknown command – type help', 'err');
+    return;
+  }
 
   // auth-free commands
   if (cmdName === 'login') {
