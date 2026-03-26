@@ -282,10 +282,10 @@ try {
 
 let currentAbortController = null;
 
-// ---------- INDEXEDDB (with compound key to prevent duplicates) ----------
+// ---------- INDEXEDDB (no compound key – we store aggregated rows, but we'll maintain uniqueness ourselves) ----------
 const db = new Dexie('TrackerDB');
 db.version(1).stores({
-  workouts: '[name+date], name, date, value, name_raw',
+  workouts: '++id, name, date, value, name_raw',
   weights: 'date, value',
   pendingOps: '++id, type, payload, timestamp'
 });
@@ -367,8 +367,19 @@ async function pullFromSupabase(abortSignal) {
     if (workoutsRes.error) throw new Error(`Workouts pull: ${workoutsRes.error.message}`);
     if (weightsRes.error) throw new Error(`Weights pull: ${weightsRes.error.message}`);
     
+    // Aggregate workouts by name+date to match our local storage model (one entry per name+date)
+    const aggregatedWorkouts = {};
+    (workoutsRes.data || []).forEach(w => {
+      const key = `${w.name}|${w.date}`;
+      if (!aggregatedWorkouts[key]) {
+        aggregatedWorkouts[key] = { name_raw: w.name_raw, name: w.name, date: w.date, value: 0 };
+      }
+      aggregatedWorkouts[key].value += w.value;
+    });
+    const workoutsToStore = Object.values(aggregatedWorkouts);
+    
     await db.workouts.clear();
-    if (workoutsRes.data) await db.workouts.bulkAdd(workoutsRes.data);
+    if (workoutsToStore.length) await db.workouts.bulkAdd(workoutsToStore);
     await db.weights.clear();
     if (weightsRes.data) await db.weights.bulkAdd(weightsRes.data);
     return true;
@@ -501,11 +512,11 @@ async function performPull(abortSignal) {
 }
 
 // --- Core data operations (using upsert via put for workouts) ---
+// Since we no longer have a compound key, we manually delete existing entry for (name,date) before adding.
 async function storeWorkout(ex, val, date, append = false, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
   const name = map[ex] || ex;
-  const key = `${name}|${date}`;
-  const existing = await db.workouts.get(key);
+  const existing = await db.workouts.where({ name, date }).first();
   const existingValue = existing ? existing.value : null;
   
   if (!append && existing && !skipConfirm) {
@@ -517,7 +528,11 @@ async function storeWorkout(ex, val, date, append = false, skipConfirm = false) 
     newVal = existing.value + val;
   }
   const entry = { name_raw: ex, name, value: newVal, date };
-  await db.workouts.put(entry); // upsert using compound key
+  // Delete existing entry for this name+date (if any)
+  if (existing) {
+    await db.workouts.where({ name, date }).delete();
+  }
+  await db.workouts.add(entry);
   const synced = await syncToSupabase('insert_workout', entry);
   return { synced, entry, replaced: !append && !!existing, existingValue, appended: append && !!existing };
 }
@@ -549,7 +564,7 @@ async function loadFromLocal() {
 
 function updateDashboard(workouts, weights) {
   const t = today();
-  // Aggregate per exercise (sum per day) – with our new model, each date has exactly one value per name
+  // Aggregate per exercise (sum per day) – but our store already has one entry per name+date, so just sum by date (though not needed)
   const perEx = {};
   workouts.forEach(w => {
     if (!perEx[w.name]) perEx[w.name] = {};
@@ -706,7 +721,7 @@ async function listWorkout(args) {
   if (to) query = query.filter(w => w.date <= to);
   const results = await query.toArray();
   if (!results.length) { print('No workouts found.'); return; }
-  // Group by date to show aggregated values (just in case, though our model should have one per day)
+  // Group by date to show aggregated values (though our store already has one per name+date)
   const grouped = {};
   results.forEach(w => {
     if (!grouped[w.date]) grouped[w.date] = {};
@@ -738,7 +753,7 @@ async function cmdStats() {
   const weights = await db.weights.toArray();
   if (!workouts.length) { print('No workout data yet', 'err'); return; }
 
-  // Aggregate per exercise and date to get daily totals
+  // Aggregate per exercise and date to get daily totals (already aggregated, but we sum just in case)
   const dailyTotals = {};
   workouts.forEach(w => {
     if (!dailyTotals[w.name]) dailyTotals[w.name] = {};
@@ -886,8 +901,10 @@ async function editWorkoutConfirmed(ex, newVal, date) {
   const targetDate = date || today();
   if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
   const name = map[ex] || ex;
+  // Delete any existing entry for this name+date
+  await db.workouts.where({ name, date: targetDate }).delete();
   const entry = { name_raw: ex, name, value: val, date: targetDate };
-  await db.workouts.put(entry);
+  await db.workouts.add(entry);
   await syncToSupabase('insert_workout', entry);
   print(`${name} updated to ${val} on ${targetDate}`, 'success');
   await loadFromLocal();
@@ -1216,12 +1233,12 @@ Tip: Press Tab to autocomplete commands and exercise names.
       if (!ex || !newVal) { print('Usage: edit workout <ex> <new> [date]', 'err'); return; }
       const name = map[ex] || ex;
       const targetDate = date || today();
-      const existing = await db.workouts.get(`${name}|${targetDate}`);
+      const existing = await db.workouts.where({ name, date: targetDate }).first();
       if (!existing) {
         const val = parseFloat(newVal);
         if (isNaN(val) || val <= 0) { print('Value must be a positive number', 'err'); return; }
         if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
-        await db.workouts.put({ name_raw: ex, name, value: val, date: targetDate });
+        await db.workouts.add({ name_raw: ex, name, value: val, date: targetDate });
         await syncToSupabase('insert_workout', { name_raw: ex, name, value: val, date: targetDate });
         print(`Created ${name} on ${targetDate} with ${val}`, 'success');
         await loadFromLocal();
