@@ -60,10 +60,6 @@ body {
   margin: 0;
   white-space: pre-wrap;
 }
-.separator {
-  border-bottom: 1px dashed #2a2a2a;
-  margin: 8px 0;
-}
 #heatmap {
   display: inline-flex;
   flex-wrap: wrap;
@@ -77,6 +73,7 @@ body {
   border-radius: 1px;
   transition: background 0.1s;
   display: inline-block;
+  cursor: pointer;
 }
 .cell.active { background: #22c55e; }
 #terminal {
@@ -142,11 +139,14 @@ input {
   position: absolute;
   background: #000;
   border: 1px solid #22c55e;
-  padding: 6px 10px;
+  padding: 8px 12px;
   font-size: 12px;
   white-space: pre;
   z-index: 100;
   border-radius: 4px;
+  pointer-events: auto;
+  max-width: 80vw;
+  word-wrap: break-word;
 }
 #loading {
   position: fixed;
@@ -189,6 +189,10 @@ input {
   }
   input {
     font-size: 15px;
+  }
+  .tooltip {
+    font-size: 14px;
+    padding: 10px 14px;
   }
 }
 </style>
@@ -499,7 +503,6 @@ async function storeWorkout(ex, val, date, append = false, skipConfirm = false) 
   
   // If not appending, existing entry exists, and skipConfirm is false, we need confirmation
   if (!append && existing && !skipConfirm) {
-    // Instead of throwing, we'll use the confirmation system
     throw { needConfirm: true, message: `Overwrite ${name} on ${date} (current ${existingValue}) with ${val}? (y/n)`, type: 'overwrite', data: { ex, val, date, name, existingValue, append: false } };
   }
   
@@ -561,7 +564,8 @@ function updateDashboard(workouts, weights) {
   // Add today's weight
   const todayWeight = weights.find(w => w.date === t);
   if (todayWeight) {
-    todayStr += `Weight: ${todayWeight.value} kg\n`;
+    const roundedWeight = Math.round(todayWeight.value * 10) / 10;
+    todayStr += `Weight: ${roundedWeight} kg\n`;
   }
   todayStatsDiv.innerHTML = todayStr.replace(/\n/g, '<br>');
 
@@ -576,7 +580,7 @@ function updateDashboard(workouts, weights) {
   });
   exerciseStatsDiv.innerHTML = exStats.replace(/\n/g, '<br>');
 
-  // Weight stats with delta
+  // Weight stats with delta (rounded to 1 decimal)
   let weightStats = '';
   if (weights.length) {
     const sorted = weights.sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -585,18 +589,53 @@ function updateDashboard(workouts, weights) {
     let delta = '';
     if (prev && prev.value !== latest.value) {
       const diff = latest.value - prev.value;
-      delta = diff > 0 ? ` (+${diff} kg)` : ` (${diff} kg)`;
+      const roundedDiff = Math.round(diff * 10) / 10;
+      delta = roundedDiff > 0 ? ` (+${roundedDiff} kg)` : ` (${roundedDiff} kg)`;
     }
-    weightStats = `Latest: ${latest.value} kg on ${latest.date}${delta}`;
-    // Show recent 3 weights inline
+    const latestWeight = Math.round(latest.value * 10) / 10;
+    weightStats = `Latest: ${latestWeight} kg on ${latest.date}${delta}`;
+    // Show recent 3 weights, rounded
     const recent = sorted.slice(0, 3);
     if (recent.length > 1) {
-      weightStats += `\nRecent: ${recent.map(w => `${w.value} (${w.date.slice(5)})`).join(' · ')}`;
+      weightStats += `\nRecent: ${recent.map(w => `${Math.round(w.value * 10) / 10} (${w.date.slice(5)})`).join(' · ')}`;
     }
   } else {
     weightStats = 'No weight data yet.';
   }
   weightStatsDiv.innerHTML = weightStats.replace(/\n/g, '<br>');
+}
+
+// --- Heatmap with touch support ---
+let currentTooltipCell = null;
+
+function hideTooltip() {
+  tooltip.style.display = 'none';
+  currentTooltipCell = null;
+}
+
+function showTooltipForCell(cell, content, event) {
+  // Position near the cell (for touch, use event's client coordinates if available, otherwise cell position)
+  let left, top;
+  if (event && event.touches) {
+    // Touch event
+    const touch = event.touches[0];
+    left = touch.clientX + 10;
+    top = touch.clientY + 10;
+  } else if (event && (event.clientX || event.clientY)) {
+    // Mouse event
+    left = event.clientX + 10;
+    top = event.clientY + 10;
+  } else {
+    // Fallback: position relative to cell
+    const rect = cell.getBoundingClientRect();
+    left = rect.right + 10;
+    top = rect.top;
+  }
+  tooltip.textContent = content;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+  tooltip.style.display = 'block';
+  currentTooltipCell = cell;
 }
 
 function generateHeatmap(workouts, weights) {
@@ -622,24 +661,56 @@ function generateHeatmap(workouts, weights) {
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     const cell = document.createElement('div');
     cell.className = 'cell' + (dayMap[key] ? ' active' : '');
-    cell.onmouseenter = (e) => {
-      tooltip.style.display = 'block';
-      tooltip.style.left = e.pageX + 10 + 'px';
-      tooltip.style.top = e.pageY + 10 + 'px';
+    cell.setAttribute('data-date', key);
+    // Prepare tooltip content
+    const getTooltipContent = () => {
       let txt = key;
       if (dayMap[key]) {
         const agg = {};
         dayMap[key].forEach(x => agg[x.name] = (agg[x.name] || 0) + x.value);
         Object.entries(agg).forEach(([k,v]) => txt += `\n${k} ${v}`);
       }
-      if (window.weightsMap && window.weightsMap[key]) txt += `\nwt ${window.weightsMap[key]} kg`;
-      tooltip.textContent = txt;
+      if (window.weightsMap && window.weightsMap[key]) {
+        const rounded = Math.round(window.weightsMap[key] * 10) / 10;
+        txt += `\nwt ${rounded} kg`;
+      }
+      return txt;
     };
-    cell.onmouseleave = () => tooltip.style.display = 'none';
+    // Desktop hover
+    cell.onmouseenter = (e) => {
+      showTooltipForCell(cell, getTooltipContent(), e);
+    };
+    cell.onmouseleave = () => {
+      hideTooltip();
+    };
+    // Touch / click (for both mobile and desktop as fallback)
+    cell.onclick = (e) => {
+      e.stopPropagation();
+      // If tooltip already showing for this cell, hide it; otherwise show
+      if (currentTooltipCell === cell && tooltip.style.display === 'block') {
+        hideTooltip();
+      } else {
+        showTooltipForCell(cell, getTooltipContent(), e);
+      }
+    };
     container.appendChild(cell);
     d.setDate(d.getDate() + 1);
   }
 }
+
+// Global click/tap handler to hide tooltip when clicking outside
+document.body.addEventListener('click', (e) => {
+  // If the click target is not a cell and not the tooltip itself, hide tooltip
+  if (!e.target.closest('.cell') && !tooltip.contains(e.target)) {
+    hideTooltip();
+  }
+});
+// Also handle touchstart to hide tooltip when tapping outside (but prevent if it's a cell)
+document.body.addEventListener('touchstart', (e) => {
+  if (!e.target.closest('.cell') && !tooltip.contains(e.target)) {
+    hideTooltip();
+  }
+});
 
 // --- Command handlers (read-only, allowed for guests) ---
 async function listWorkout(args) {
@@ -661,7 +732,10 @@ async function listWeight(args) {
   const results = await query.toArray();
   if (!results.length) { print('No weight entries.'); return; }
   print('--- weights ---');
-  results.forEach(w => print(`${w.date}: ${w.value} kg`));
+  results.forEach(w => {
+    const rounded = Math.round(w.value * 10) / 10;
+    print(`${w.date}: ${rounded} kg`);
+  });
 }
 
 async function cmdStats() {
@@ -685,7 +759,7 @@ async function cmdStats() {
   if (weights.length) {
     const lastWeight = weights[weights.length-1].value;
     const bestWeight = Math.max(...weights.map(w=>w.value));
-    print(`\nweight: latest ${lastWeight} kg | best ${bestWeight} kg`);
+    print(`\nweight: latest ${Math.round(lastWeight*10)/10} kg | best ${Math.round(bestWeight*10)/10} kg`);
   }
 }
 
@@ -1252,10 +1326,10 @@ Tip: Press Tab to autocomplete commands and exercise names.
       let msg = '';
       if (replaced) {
         const diff = val - existingValue;
-        const delta = diff !== 0 ? (diff > 0 ? ` (+${diff} kg)` : ` (${diff} kg)`) : '';
-        msg = `Updated weight on ${date}: ${existingValue} → ${val} kg${delta}`;
+        const delta = diff !== 0 ? (diff > 0 ? ` (+${Math.round(diff*10)/10} kg)` : ` (${Math.round(diff*10)/10} kg)`) : '';
+        msg = `Updated weight on ${date}: ${Math.round(existingValue*10)/10} → ${Math.round(val*10)/10} kg${delta}`;
       } else {
-        msg = `Logged weight ${val} kg for ${date}`;
+        msg = `Logged weight ${Math.round(val*10)/10} kg for ${date}`;
       }
       if (synced) {
         print(msg, 'success');
@@ -1272,9 +1346,9 @@ Tip: Press Tab to autocomplete commands and exercise names.
             try {
               const result = await storeWeight(err.data.val, err.data.date, true);
               if (result.synced) {
-                print(`Overwritten weight on ${err.data.date}: ${err.data.existingValue} → ${err.data.val} kg`, 'success');
+                print(`Overwritten weight on ${err.data.date}: ${Math.round(err.data.existingValue*10)/10} → ${Math.round(err.data.val*10)/10} kg`, 'success');
               } else {
-                print(`[queued] Overwritten weight on ${err.data.date}: ${err.data.existingValue} → ${err.data.val} kg (offline, will push later)`, 'info');
+                print(`[queued] Overwritten weight on ${err.data.date}: ${Math.round(err.data.existingValue*10)/10} → ${Math.round(err.data.val*10)/10} kg (offline, will push later)`, 'info');
               }
               await loadFromLocal();
             } catch(e) {
