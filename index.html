@@ -160,9 +160,36 @@ input {
   display: none;
   font-family: monospace;
 }
+/* Mobile improvements */
 @media (max-width: 600px) {
-  .dashboard { font-size: 11px; }
-  .cell { width: 8px; height: 8px; }
+  body {
+    padding: 8px;
+  }
+  .dashboard {
+    padding: 16px;
+    font-size: 15px;
+  }
+  .dashboard-label {
+    font-size: 16px;
+    padding-bottom: 4px;
+    margin-bottom: 8px;
+  }
+  .dashboard-content {
+    font-size: 14px;
+  }
+  .cell {
+    width: min(14px, 4vw);
+    height: min(14px, 4vw);
+  }
+  #log {
+    font-size: 15px;
+  }
+  #prompt {
+    font-size: 15px;
+  }
+  input {
+    font-size: 15px;
+  }
 }
 </style>
 </head>
@@ -463,12 +490,19 @@ async function performPull(abortSignal) {
   return success;
 }
 
-// --- Core data operations with previous value tracking ---
-async function storeWorkout(ex, val, date, append = false) {
+// --- Core data operations with previous value tracking (now with confirmation for overwrites) ---
+async function storeWorkout(ex, val, date, append = false, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
   const name = map[ex] || ex;
   const existing = await db.workouts.where({ name, date }).first();
   const existingValue = existing ? existing.value : null;
+  
+  // If not appending, existing entry exists, and skipConfirm is false, we need confirmation
+  if (!append && existing && !skipConfirm) {
+    // Instead of throwing, we'll use the confirmation system
+    throw { needConfirm: true, message: `Overwrite ${name} on ${date} (current ${existingValue}) with ${val}? (y/n)`, type: 'overwrite', data: { ex, val, date, name, existingValue, append: false } };
+  }
+  
   const entry = { name_raw: ex, name, value: val, date };
   if (!append && existing) {
     await db.workouts.where({ name, date }).delete();
@@ -479,10 +513,15 @@ async function storeWorkout(ex, val, date, append = false) {
   return { synced, entry, replaced: !append && !!existing, existingValue };
 }
 
-async function storeWeight(val, date) {
+async function storeWeight(val, date, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
   const existing = await db.weights.where({ date }).first();
   const existingValue = existing ? existing.value : null;
+  
+  if (existing && !skipConfirm) {
+    throw { needConfirm: true, message: `Overwrite weight on ${date} (current ${existingValue}) with ${val} kg? (y/n)`, type: 'overwrite_weight', data: { val, date, existingValue } };
+  }
+  
   await db.weights.where({ date }).delete();
   await syncToSupabase('delete_weight', { date });
   await db.weights.add({ value: val, date });
@@ -757,6 +796,50 @@ function confirmDeleteWeight(date) {
   confirmationArgs = [date];
 }
 
+async function editWorkoutConfirmed(ex, newVal, date) {
+  const val = parseFloat(newVal);
+  if (isNaN(val) || val <= 0) { print('Value must be a positive number', 'err'); return; }
+  const targetDate = date || today();
+  if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
+  const name = map[ex] || ex;
+  await db.workouts.where({ name, date: targetDate }).delete();
+  await syncToSupabase('delete_workout', { name, date: targetDate });
+  await db.workouts.add({ name_raw: ex, name, value: val, date: targetDate });
+  await syncToSupabase('insert_workout', { name_raw: ex, name, value: val, date: targetDate });
+  print(`${name} updated to ${val} on ${targetDate}`, 'success');
+  await loadFromLocal();
+}
+
+function confirmEditWorkout(ex, newVal, date) {
+  const name = map[ex] || ex;
+  const targetDate = date || today();
+  print(`WARNING: Confirm: update ${name} on ${targetDate} to ${newVal}? (y/n)`, 'info');
+  awaitingConfirmation = true;
+  confirmationCallback = editWorkoutConfirmed;
+  confirmationArgs = [ex, newVal, date];
+}
+
+async function editWeightConfirmed(newVal, date) {
+  const val = parseFloat(newVal);
+  if (isNaN(val) || val <= 0) { print('Weight must be a positive number', 'err'); return; }
+  const targetDate = date || today();
+  if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
+  await db.weights.where({ date: targetDate }).delete();
+  await syncToSupabase('delete_weight', { date: targetDate });
+  await db.weights.add({ value: val, date: targetDate });
+  await syncToSupabase('insert_weight', { value: val, date: targetDate });
+  print(`Weight updated to ${val} kg on ${targetDate}`, 'success');
+  await loadFromLocal();
+}
+
+function confirmEditWeight(newVal, date) {
+  const targetDate = date || today();
+  print(`WARNING: Confirm: update weight on ${targetDate} to ${newVal} kg? (y/n)`, 'info');
+  awaitingConfirmation = true;
+  confirmationCallback = editWeightConfirmed;
+  confirmationArgs = [newVal, date];
+}
+
 async function pullConfirmed() {
   setLoading(true);
   try {
@@ -968,7 +1051,7 @@ Tip: Press Tab to autocomplete commands and exercise names.
   w <ex> <n> [+<append>] [date]
   wt <n> [date]
   delete workout|weight YYYY-MM-DD
-  edit workout|weight ...
+  edit workout|weight ...  (confirmation required)
   add-ex <shortcode> <fullname>
   push, resync, pending
   logout
@@ -1038,31 +1121,39 @@ Tip: Press Tab to autocomplete commands and exercise names.
       const newVal = args[2];
       const date = args[3];
       if (!ex || !newVal) { print('Usage: edit workout <ex> <new> [date]', 'err'); return; }
-      const val = parseFloat(newVal);
-      if (isNaN(val) || val <= 0) { print('Value must be a positive number', 'err'); return; }
-      const targetDate = date || today();
-      if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
+      // Check if entry exists to show meaningful confirmation
       const name = map[ex] || ex;
-      await db.workouts.where({ name, date: targetDate }).delete();
-      await syncToSupabase('delete_workout', { name, date: targetDate });
-      await db.workouts.add({ name_raw: ex, name, value: val, date: targetDate });
-      await syncToSupabase('insert_workout', { name_raw: ex, name, value: val, date: targetDate });
-      print(`${name} updated to ${val} on ${targetDate}`, 'success');
-      await loadFromLocal();
+      const targetDate = date || today();
+      const existing = await db.workouts.where({ name, date: targetDate }).first();
+      if (!existing) {
+        // No existing entry, just create
+        const val = parseFloat(newVal);
+        if (isNaN(val) || val <= 0) { print('Value must be a positive number', 'err'); return; }
+        if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
+        await db.workouts.add({ name_raw: ex, name, value: val, date: targetDate });
+        await syncToSupabase('insert_workout', { name_raw: ex, name, value: val, date: targetDate });
+        print(`Created ${name} on ${targetDate} with ${val}`, 'success');
+        await loadFromLocal();
+      } else {
+        confirmEditWorkout(ex, newVal, date);
+      }
     } else if (type === 'weight') {
       const newVal = args[1];
       const date = args[2];
       if (!newVal) { print('Usage: edit weight <new> [date]', 'err'); return; }
-      const val = parseFloat(newVal);
-      if (isNaN(val) || val <= 0) { print('Weight must be a positive number', 'err'); return; }
       const targetDate = date || today();
-      if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
-      await db.weights.where({ date: targetDate }).delete();
-      await syncToSupabase('delete_weight', { date: targetDate });
-      await db.weights.add({ value: val, date: targetDate });
-      await syncToSupabase('insert_weight', { value: val, date: targetDate });
-      print(`Weight updated to ${val} kg on ${targetDate}`, 'success');
-      await loadFromLocal();
+      const existing = await db.weights.where({ date: targetDate }).first();
+      if (!existing) {
+        const val = parseFloat(newVal);
+        if (isNaN(val) || val <= 0) { print('Weight must be a positive number', 'err'); return; }
+        if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
+        await db.weights.add({ value: val, date: targetDate });
+        await syncToSupabase('insert_weight', { value: val, date: targetDate });
+        print(`Created weight ${val} kg on ${targetDate}`, 'success');
+        await loadFromLocal();
+      } else {
+        confirmEditWeight(newVal, date);
+      }
     } else {
       print('Usage: edit workout|weight ...', 'err');
     }
@@ -1099,24 +1190,55 @@ Tip: Press Tab to autocomplete commands and exercise names.
     if (!validDate(date)) { print('Invalid date format', 'err'); return; }
     if (isFutureDate(date)) { print('Cannot log future dates', 'err'); return; }
 
-    const { synced, replaced, existingValue, entry } = await storeWorkout(ex, val, date, append);
-    const name = map[ex] || ex;
-    const suffix = (ex === 'pl' || raw.includes(':') || raw.endsWith('s')) ? ` (${formatDuration(val)})` : '';
-    let msg = '';
-    if (append) {
-      const total = (existingValue || 0) + val;
-      msg = `Appended ${val} ${name} to ${date} (total ${total})`;
-    } else if (replaced) {
-      msg = `Replaced ${name} on ${date}: ${existingValue} → ${val}${suffix}`;
-    } else {
-      msg = `Logged ${val} ${name} for ${date}${suffix}`;
+    try {
+      const { synced, replaced, existingValue, entry } = await storeWorkout(ex, val, date, append);
+      const name = map[ex] || ex;
+      const suffix = (ex === 'pl' || raw.includes(':') || raw.endsWith('s')) ? ` (${formatDuration(val)})` : '';
+      let msg = '';
+      if (append) {
+        const total = (existingValue || 0) + val;
+        msg = `Appended ${val} ${name} to ${date} (total ${total})`;
+      } else if (replaced) {
+        msg = `Replaced ${name} on ${date}: ${existingValue} → ${val}${suffix}`;
+      } else {
+        msg = `Logged ${val} ${name} for ${date}${suffix}`;
+      }
+      if (synced) {
+        print(msg, 'success');
+      } else {
+        print(`[queued] ${msg} (offline, will push later)`, 'info');
+      }
+      await loadFromLocal();
+    } catch (err) {
+      if (err.needConfirm) {
+        print(err.message, 'info');
+        awaitingConfirmation = true;
+        confirmationCallback = async (confirm) => {
+          if (confirm) {
+            try {
+              const result = await storeWorkout(err.data.ex, err.data.val, err.data.date, err.data.append, true);
+              const suffix = (err.data.ex === 'pl' || raw.includes(':') || raw.endsWith('s')) ? ` (${formatDuration(result.entry.value)})` : '';
+              if (result.synced) {
+                print(`Overwritten ${result.entry.name} on ${result.entry.date}: ${result.existingValue} → ${result.entry.value}${suffix}`, 'success');
+              } else {
+                print(`[queued] Overwritten ${result.entry.name} on ${result.entry.date}: ${result.existingValue} → ${result.entry.value}${suffix} (offline, will push later)`, 'info');
+              }
+              await loadFromLocal();
+            } catch(e) {
+              print(`Error: ${e.message}`, 'err');
+            }
+          } else {
+            print('Cancelled', 'info');
+          }
+          awaitingConfirmation = false;
+          confirmationCallback = null;
+          confirmationArgs = null;
+        };
+        confirmationArgs = [true]; // will be used as confirm flag
+      } else {
+        print(`Error: ${err.message}`, 'err');
+      }
     }
-    if (synced) {
-      print(msg, 'success');
-    } else {
-      print(`[queued] ${msg} (offline, will push later)`, 'info');
-    }
-    await loadFromLocal();
     return;
   }
   if (cmdName === 'wt') {
@@ -1125,21 +1247,51 @@ Tip: Press Tab to autocomplete commands and exercise names.
     if (isNaN(val) || val <= 0) { print('Weight must be a positive number', 'err'); return; }
     if (!validDate(date)) { print('Invalid date format', 'err'); return; }
     if (isFutureDate(date)) { print('Cannot log future dates', 'err'); return; }
-    const { synced, replaced, existingValue } = await storeWeight(val, date);
-    let msg = '';
-    if (replaced) {
-      const diff = val - existingValue;
-      const delta = diff !== 0 ? (diff > 0 ? ` (+${diff} kg)` : ` (${diff} kg)`) : '';
-      msg = `Updated weight on ${date}: ${existingValue} → ${val} kg${delta}`;
-    } else {
-      msg = `Logged weight ${val} kg for ${date}`;
+    try {
+      const { synced, replaced, existingValue } = await storeWeight(val, date);
+      let msg = '';
+      if (replaced) {
+        const diff = val - existingValue;
+        const delta = diff !== 0 ? (diff > 0 ? ` (+${diff} kg)` : ` (${diff} kg)`) : '';
+        msg = `Updated weight on ${date}: ${existingValue} → ${val} kg${delta}`;
+      } else {
+        msg = `Logged weight ${val} kg for ${date}`;
+      }
+      if (synced) {
+        print(msg, 'success');
+      } else {
+        print(`[queued] ${msg} (offline, will push later)`, 'info');
+      }
+      await loadFromLocal();
+    } catch (err) {
+      if (err.needConfirm) {
+        print(err.message, 'info');
+        awaitingConfirmation = true;
+        confirmationCallback = async (confirm) => {
+          if (confirm) {
+            try {
+              const result = await storeWeight(err.data.val, err.data.date, true);
+              if (result.synced) {
+                print(`Overwritten weight on ${err.data.date}: ${err.data.existingValue} → ${err.data.val} kg`, 'success');
+              } else {
+                print(`[queued] Overwritten weight on ${err.data.date}: ${err.data.existingValue} → ${err.data.val} kg (offline, will push later)`, 'info');
+              }
+              await loadFromLocal();
+            } catch(e) {
+              print(`Error: ${e.message}`, 'err');
+            }
+          } else {
+            print('Cancelled', 'info');
+          }
+          awaitingConfirmation = false;
+          confirmationCallback = null;
+          confirmationArgs = null;
+        };
+        confirmationArgs = [true];
+      } else {
+        print(`Error: ${err.message}`, 'err');
+      }
     }
-    if (synced) {
-      print(msg, 'success');
-    } else {
-      print(`[queued] ${msg} (offline, will push later)`, 'info');
-    }
-    await loadFromLocal();
     return;
   }
 
