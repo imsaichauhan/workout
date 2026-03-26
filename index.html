@@ -1085,9 +1085,12 @@ cmd.addEventListener('keydown', async (e) => {
   if (e.key === 'Enter') {
     const v = cmd.value;
     if (v.trim()) {
-      history.push(v);
-      localStorage.setItem('cmdHistory', JSON.stringify(history.slice(-100)));
-      hIndex = history.length;
+      // Don't add to history if we're waiting for a password
+      if (!awaitingPassword) {
+        history.push(v);
+        localStorage.setItem('cmdHistory', JSON.stringify(history.slice(-100)));
+        hIndex = history.length;
+      }
     }
     await run(v);
     cmd.value = '';
