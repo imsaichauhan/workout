@@ -219,7 +219,7 @@ input {
   <div id="log"></div>
   <div id="line">
     <span id="prompt">(guest)</span><span id="offline-indicator"></span><span>></span>
-    <input id="cmd" autocomplete="off" spellcheck="false">
+    <input id="cmd" autocomplete="off" spellcheck="false" autocapitalize="none">
   </div>
 </div>
 <div id="tooltip" class="tooltip" style="display:none"></div>
@@ -543,7 +543,7 @@ async function loadFromLocal() {
 
 function updateDashboard(workouts, weights) {
   const t = today();
-  // Aggregate per exercise (sum per day) – but with our new model, each date has exactly one value per name
+  // Aggregate per exercise (sum per day) – with our new model, each date has exactly one value per name
   const perEx = {};
   workouts.forEach(w => {
     if (!perEx[w.name]) perEx[w.name] = {};
