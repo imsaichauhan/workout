@@ -276,11 +276,11 @@ try {
 
 let currentAbortController = null;
 
-// ---------- INDEXEDDB ----------
+// ---------- INDEXEDDB (with compound key to prevent duplicates) ----------
 const db = new Dexie('TrackerDB');
 db.version(1).stores({
-  workouts: '++id, name, date, value, name_raw',
-  weights: '++id, date, value',
+  workouts: '[name+date], name, date, value, name_raw',
+  weights: 'date, value',
   pendingOps: '++id, type, payload, timestamp'
 });
 
@@ -494,40 +494,38 @@ async function performPull(abortSignal) {
   return success;
 }
 
-// --- Core data operations with previous value tracking (now with confirmation for overwrites) ---
+// --- Core data operations (using upsert via put for workouts) ---
 async function storeWorkout(ex, val, date, append = false, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
   const name = map[ex] || ex;
-  const existing = await db.workouts.where({ name, date }).first();
+  const key = `${name}|${date}`;
+  const existing = await db.workouts.get(key);
   const existingValue = existing ? existing.value : null;
   
-  // If not appending, existing entry exists, and skipConfirm is false, we need confirmation
   if (!append && existing && !skipConfirm) {
     throw { needConfirm: true, message: `Overwrite ${name} on ${date} (current ${existingValue}) with ${val}? (y/n)`, type: 'overwrite', data: { ex, val, date, name, existingValue, append: false } };
   }
   
-  const entry = { name_raw: ex, name, value: val, date };
-  if (!append && existing) {
-    await db.workouts.where({ name, date }).delete();
-    await syncToSupabase('delete_workout', { name, date });
+  let newVal = val;
+  if (append && existing) {
+    newVal = existing.value + val;
   }
-  await db.workouts.add(entry);
+  const entry = { name_raw: ex, name, value: newVal, date };
+  await db.workouts.put(entry); // upsert using compound key
   const synced = await syncToSupabase('insert_workout', entry);
-  return { synced, entry, replaced: !append && !!existing, existingValue };
+  return { synced, entry, replaced: !append && !!existing, existingValue, appended: append && !!existing };
 }
 
 async function storeWeight(val, date, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
-  const existing = await db.weights.where({ date }).first();
+  const existing = await db.weights.get(date);
   const existingValue = existing ? existing.value : null;
   
   if (existing && !skipConfirm) {
     throw { needConfirm: true, message: `Overwrite weight on ${date} (current ${existingValue}) with ${val} kg? (y/n)`, type: 'overwrite_weight', data: { val, date, existingValue } };
   }
   
-  await db.weights.where({ date }).delete();
-  await syncToSupabase('delete_weight', { date });
-  await db.weights.add({ value: val, date });
+  await db.weights.put({ date, value: val });
   const synced = await syncToSupabase('insert_weight', { value: val, date });
   return { synced, replaced: !!existing, existingValue };
 }
@@ -545,7 +543,7 @@ async function loadFromLocal() {
 
 function updateDashboard(workouts, weights) {
   const t = today();
-  // Aggregate per exercise (sum per day)
+  // Aggregate per exercise (sum per day) – but with our new model, each date has exactly one value per name
   const perEx = {};
   workouts.forEach(w => {
     if (!perEx[w.name]) perEx[w.name] = {};
@@ -614,19 +612,15 @@ function hideTooltip() {
 }
 
 function showTooltipForCell(cell, content, event) {
-  // Position near the cell (for touch, use event's client coordinates if available, otherwise cell position)
   let left, top;
   if (event && event.touches) {
-    // Touch event
     const touch = event.touches[0];
     left = touch.clientX + 10;
     top = touch.clientY + 10;
   } else if (event && (event.clientX || event.clientY)) {
-    // Mouse event
     left = event.clientX + 10;
     top = event.clientY + 10;
   } else {
-    // Fallback: position relative to cell
     const rect = cell.getBoundingClientRect();
     left = rect.right + 10;
     top = rect.top;
@@ -662,7 +656,6 @@ function generateHeatmap(workouts, weights) {
     const cell = document.createElement('div');
     cell.className = 'cell' + (dayMap[key] ? ' active' : '');
     cell.setAttribute('data-date', key);
-    // Prepare tooltip content
     const getTooltipContent = () => {
       let txt = key;
       if (dayMap[key]) {
@@ -676,17 +669,10 @@ function generateHeatmap(workouts, weights) {
       }
       return txt;
     };
-    // Desktop hover
-    cell.onmouseenter = (e) => {
-      showTooltipForCell(cell, getTooltipContent(), e);
-    };
-    cell.onmouseleave = () => {
-      hideTooltip();
-    };
-    // Touch / click (for both mobile and desktop as fallback)
+    cell.onmouseenter = (e) => { showTooltipForCell(cell, getTooltipContent(), e); };
+    cell.onmouseleave = () => { hideTooltip(); };
     cell.onclick = (e) => {
       e.stopPropagation();
-      // If tooltip already showing for this cell, hide it; otherwise show
       if (currentTooltipCell === cell && tooltip.style.display === 'block') {
         hideTooltip();
       } else {
@@ -700,16 +686,10 @@ function generateHeatmap(workouts, weights) {
 
 // Global click/tap handler to hide tooltip when clicking outside
 document.body.addEventListener('click', (e) => {
-  // If the click target is not a cell and not the tooltip itself, hide tooltip
-  if (!e.target.closest('.cell') && !tooltip.contains(e.target)) {
-    hideTooltip();
-  }
+  if (!e.target.closest('.cell') && !tooltip.contains(e.target)) hideTooltip();
 });
-// Also handle touchstart to hide tooltip when tapping outside (but prevent if it's a cell)
 document.body.addEventListener('touchstart', (e) => {
-  if (!e.target.closest('.cell') && !tooltip.contains(e.target)) {
-    hideTooltip();
-  }
+  if (!e.target.closest('.cell') && !tooltip.contains(e.target)) hideTooltip();
 });
 
 // --- Command handlers (read-only, allowed for guests) ---
@@ -720,8 +700,17 @@ async function listWorkout(args) {
   if (to) query = query.filter(w => w.date <= to);
   const results = await query.toArray();
   if (!results.length) { print('No workouts found.'); return; }
+  // Group by date to show aggregated values (just in case, though our model should have one per day)
+  const grouped = {};
+  results.forEach(w => {
+    if (!grouped[w.date]) grouped[w.date] = {};
+    grouped[w.date][w.name] = (grouped[w.date][w.name] || 0) + w.value;
+  });
   print('--- workouts ---');
-  results.forEach(w => print(`${w.date} | ${w.name}: ${w.value}`));
+  for (const date in grouped) {
+    const entries = Object.entries(grouped[date]).map(([name, val]) => `${name}: ${val}`).join(', ');
+    print(`${date} | ${entries}`);
+  }
 }
 
 async function listWeight(args) {
@@ -834,7 +823,7 @@ Sync & maintenance:
 // --- Destructive commands with terminal confirmation (require auth) ---
 async function deleteWorkoutConfirmed(date) {
   if (!auth) { print('Login required', 'err'); return; }
-  await db.workouts.where({ date }).delete();
+  await db.workouts.where('date').equals(date).delete();
   await syncToSupabase('delete_workout', { date });
   print(`Deleted all workouts on ${date}`, 'success');
   await loadFromLocal();
@@ -853,7 +842,7 @@ function confirmDeleteWorkout(date) {
 
 async function deleteWeightConfirmed(date) {
   if (!auth) { print('Login required', 'err'); return; }
-  await db.weights.where({ date }).delete();
+  await db.weights.where('date').equals(date).delete();
   await syncToSupabase('delete_weight', { date });
   print(`Deleted weight on ${date}`, 'success');
   await loadFromLocal();
@@ -876,10 +865,9 @@ async function editWorkoutConfirmed(ex, newVal, date) {
   const targetDate = date || today();
   if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
   const name = map[ex] || ex;
-  await db.workouts.where({ name, date: targetDate }).delete();
-  await syncToSupabase('delete_workout', { name, date: targetDate });
-  await db.workouts.add({ name_raw: ex, name, value: val, date: targetDate });
-  await syncToSupabase('insert_workout', { name_raw: ex, name, value: val, date: targetDate });
+  const entry = { name_raw: ex, name, value: val, date: targetDate };
+  await db.workouts.put(entry);
+  await syncToSupabase('insert_workout', entry);
   print(`${name} updated to ${val} on ${targetDate}`, 'success');
   await loadFromLocal();
 }
@@ -898,9 +886,7 @@ async function editWeightConfirmed(newVal, date) {
   if (isNaN(val) || val <= 0) { print('Weight must be a positive number', 'err'); return; }
   const targetDate = date || today();
   if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
-  await db.weights.where({ date: targetDate }).delete();
-  await syncToSupabase('delete_weight', { date: targetDate });
-  await db.weights.add({ value: val, date: targetDate });
+  await db.weights.put({ date: targetDate, value: val });
   await syncToSupabase('insert_weight', { value: val, date: targetDate });
   print(`Weight updated to ${val} kg on ${targetDate}`, 'success');
   await loadFromLocal();
@@ -1049,7 +1035,6 @@ async function run(input) {
       localStorage.setItem('auth', 'true');
       print('Logged in', 'success');
       updatePrompt();
-      // after login, sync (push pending and pull)
       await pushPendingOps();  // any queued changes from offline
       await pullFromSupabase();
       await loadFromLocal();
@@ -1088,7 +1073,7 @@ async function run(input) {
     } else {
       awaitingPassword = true;
       cmd.type = 'password';
-      cmd.value = '';  // clear any pre-filled text
+      cmd.value = '';
       setPrompt('password>');
     }
     return;
@@ -1195,16 +1180,14 @@ Tip: Press Tab to autocomplete commands and exercise names.
       const newVal = args[2];
       const date = args[3];
       if (!ex || !newVal) { print('Usage: edit workout <ex> <new> [date]', 'err'); return; }
-      // Check if entry exists to show meaningful confirmation
       const name = map[ex] || ex;
       const targetDate = date || today();
-      const existing = await db.workouts.where({ name, date: targetDate }).first();
+      const existing = await db.workouts.get(`${name}|${targetDate}`);
       if (!existing) {
-        // No existing entry, just create
         const val = parseFloat(newVal);
         if (isNaN(val) || val <= 0) { print('Value must be a positive number', 'err'); return; }
         if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
-        await db.workouts.add({ name_raw: ex, name, value: val, date: targetDate });
+        await db.workouts.put({ name_raw: ex, name, value: val, date: targetDate });
         await syncToSupabase('insert_workout', { name_raw: ex, name, value: val, date: targetDate });
         print(`Created ${name} on ${targetDate} with ${val}`, 'success');
         await loadFromLocal();
@@ -1216,12 +1199,12 @@ Tip: Press Tab to autocomplete commands and exercise names.
       const date = args[2];
       if (!newVal) { print('Usage: edit weight <new> [date]', 'err'); return; }
       const targetDate = date || today();
-      const existing = await db.weights.where({ date: targetDate }).first();
+      const existing = await db.weights.get(targetDate);
       if (!existing) {
         const val = parseFloat(newVal);
         if (isNaN(val) || val <= 0) { print('Weight must be a positive number', 'err'); return; }
         if (isFutureDate(targetDate)) { print('Cannot edit future dates', 'err'); return; }
-        await db.weights.add({ value: val, date: targetDate });
+        await db.weights.put({ date: targetDate, value: val });
         await syncToSupabase('insert_weight', { value: val, date: targetDate });
         print(`Created weight ${val} kg on ${targetDate}`, 'success');
         await loadFromLocal();
@@ -1265,17 +1248,16 @@ Tip: Press Tab to autocomplete commands and exercise names.
     if (isFutureDate(date)) { print('Cannot log future dates', 'err'); return; }
 
     try {
-      const { synced, replaced, existingValue, entry } = await storeWorkout(ex, val, date, append);
+      const { synced, replaced, existingValue, entry, appended } = await storeWorkout(ex, val, date, append);
       const name = map[ex] || ex;
-      const suffix = (ex === 'pl' || raw.includes(':') || raw.endsWith('s')) ? ` (${formatDuration(val)})` : '';
+      const suffix = (ex === 'pl' || raw.includes(':') || raw.endsWith('s')) ? ` (${formatDuration(entry.value)})` : '';
       let msg = '';
-      if (append) {
-        const total = (existingValue || 0) + val;
-        msg = `Appended ${val} ${name} to ${date} (total ${total})`;
+      if (appended) {
+        msg = `Appended ${val} ${name} to ${date} (total ${entry.value})`;
       } else if (replaced) {
-        msg = `Replaced ${name} on ${date}: ${existingValue} → ${val}${suffix}`;
+        msg = `Replaced ${name} on ${date}: ${existingValue} → ${entry.value}${suffix}`;
       } else {
-        msg = `Logged ${val} ${name} for ${date}${suffix}`;
+        msg = `Logged ${entry.value} ${name} for ${date}${suffix}`;
       }
       if (synced) {
         print(msg, 'success');
@@ -1308,7 +1290,7 @@ Tip: Press Tab to autocomplete commands and exercise names.
           confirmationCallback = null;
           confirmationArgs = null;
         };
-        confirmationArgs = [true]; // will be used as confirm flag
+        confirmationArgs = [true];
       } else {
         print(`Error: ${err.message}`, 'err');
       }
@@ -1385,23 +1367,19 @@ function parseDateRange(args) {
 window.addEventListener('load', async () => {
   updatePrompt();
   cmd.focus();
-  // Always pull fresh data from Supabase (read‑only) for everyone
   await pullFromSupabase();
   await loadFromLocal();
 
-  // Print a minimal welcome message for guests
   if (!auth) {
     print("Type 'help' to see available commands.", 'info');
   }
 
-  // Periodic push only for authenticated users
   setInterval(async () => {
     if (auth && isOnline()) {
       await performPush(null, true);
     }
   }, 30000);
 
-  // Online event: pull for guests, push+sync for auth
   window.addEventListener('online', async () => {
     updatePrompt();
     if (auth) {
@@ -1419,7 +1397,6 @@ window.addEventListener('load', async () => {
     print('You are offline – changes will be queued', 'info');
   });
 
-  // keep input focused
   document.body.addEventListener('click', (e) => {
     if (!tooltip.contains(e.target)) cmd.focus();
   });
