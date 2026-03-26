@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-<title>tracker · terminal fitness</title>
+<title>workout tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
 <style>
@@ -183,6 +183,9 @@ input {
   .cell {
     width: min(14px, 4vw);
     height: min(14px, 4vw);
+  }
+  #heatmap {
+    gap: 6px; /* increased spacing on mobile */
   }
   #log {
     font-size: 15px;
