@@ -104,7 +104,7 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  margin-top: 20px; /* increased spacing */
+  margin-top: 20px;
 }
 #log {
   white-space: pre-wrap;
@@ -219,7 +219,7 @@ input {
     padding: 10px 14px;
   }
   #terminal {
-    margin-top: 12px; /* slightly reduced spacing on mobile */
+    margin-top: 12px;
   }
 }
 </style>
@@ -772,7 +772,21 @@ async function cmdStats() {
   const weights = await db.weights.toArray();
   if (!workouts.length) { print('No workout data yet', 'err'); return; }
 
-  // Aggregate per exercise and date to get daily totals
+  // Helper to get date ranges for display
+  const todayDate = new Date();
+  const endLast = new Date(todayDate);
+  const startLast = new Date(todayDate);
+  startLast.setDate(todayDate.getDate() - 6); // last 7 days inclusive
+  const endPrev = new Date(startLast);
+  endPrev.setDate(endPrev.getDate() - 1);
+  const startPrev = new Date(endPrev);
+  startPrev.setDate(startPrev.getDate() - 6);
+
+  const formatDate = (d) => `${d.getMonth()+1}/${d.getDate()}`;
+  const lastRangeStr = `${formatDate(startLast)}-${formatDate(endLast)}`;
+  const prevRangeStr = `${formatDate(startPrev)}-${formatDate(endPrev)}`;
+
+  // Compute daily totals per exercise
   const dailyTotals = {};
   workouts.forEach(w => {
     if (!dailyTotals[w.name]) dailyTotals[w.name] = {};
@@ -780,23 +794,44 @@ async function cmdStats() {
     dailyTotals[w.name][w.date] += w.value;
   });
 
-  const perEx = {};
+  // Convert date strings to Date objects for comparison
+  const startLastStr = startLast.toISOString().slice(0,10);
+  const startPrevStr = startPrev.toISOString().slice(0,10);
+
+  const results = [];
   for (const [name, dates] of Object.entries(dailyTotals)) {
-    const values = Object.values(dates);
-    const total = values.reduce((a,b) => a + b, 0);
-    const best = Math.max(...values);
-    // Last 7 days total
-    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0,10);
-    const weekTotal = Object.entries(dates)
-      .filter(([date]) => date >= sevenDaysAgo)
-      .reduce((sum, [, val]) => sum + val, 0);
-    perEx[name] = { total, best, weekTotal };
+    let lastTotal = 0;
+    let prevTotal = 0;
+    for (const [date, val] of Object.entries(dates)) {
+      if (date >= startLastStr) {
+        lastTotal += val;
+      } else if (date >= startPrevStr && date < startLastStr) {
+        prevTotal += val;
+      }
+    }
+    if (lastTotal === 0 && prevTotal === 0) continue; // skip exercises with no data in these periods
+    const diff = lastTotal - prevTotal;
+    let arrow = '';
+    if (prevTotal === 0) {
+      if (lastTotal > 0) arrow = '↑ (new)';
+      else arrow = '→';
+    } else if (diff > 0) arrow = '↑';
+    else if (diff < 0) arrow = '↓';
+    else arrow = '→';
+    const diffStr = diff !== 0 ? (diff > 0 ? `+${diff}` : diff) : '';
+    results.push({ name, lastTotal, diff: diffStr, arrow });
   }
 
-  print('--- detailed stats ---');
-  for (const [ex, data] of Object.entries(perEx)) {
-    print(`${ex}: total ${data.total} | best ${data.best} | last 7d ${data.weekTotal}`);
+  // Sort alphabetically
+  results.sort((a,b) => a.name.localeCompare(b.name));
+
+  print(`--- STATS (${lastRangeStr} vs ${prevRangeStr}) ---`);
+  for (const r of results) {
+    const diffPart = r.diff ? ` (${r.diff})` : '';
+    const arrowPart = r.arrow ? ` ${r.arrow}` : '';
+    print(`${r.name}: ${r.lastTotal}${diffPart}${arrowPart}`);
   }
+
   if (weights.length) {
     const lastWeight = weights[weights.length-1].value;
     const bestWeight = Math.max(...weights.map(w=>w.value));
@@ -831,7 +866,6 @@ async function setHeatmapStart(date) {
 }
 
 function listExercises() {
-  // Combine default and custom, sort by shortcode
   const all = { ...defaultMap, ...customExercises };
   const sorted = Object.keys(all).sort();
   print('--- EXERCISE SHORTCODES ---');
