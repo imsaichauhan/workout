@@ -25,7 +25,7 @@ body {
   max-width: 800px;
   margin: 0 auto;
   width: 100%;
-  padding: 12px;
+  padding: 16px;
 }
 .dashboard {
   background: #0a0a0a;
@@ -72,7 +72,7 @@ body {
   white-space: pre-wrap;
   font-family: monospace;
 }
-#today-stats, #exercise-stats, #weight-stats {
+#today-stats, #weight-stats {
   margin: 0;
   white-space: pre-wrap;
 }
@@ -104,6 +104,7 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  margin-top: 20px; /* increased spacing */
 }
 #log {
   white-space: pre-wrap;
@@ -217,6 +218,9 @@ input {
     font-size: 14px;
     padding: 10px 14px;
   }
+  #terminal {
+    margin-top: 12px; /* slightly reduced spacing on mobile */
+  }
 }
 </style>
 </head>
@@ -232,9 +236,8 @@ input {
     <div id="today-stats" class="dashboard-content"></div>
   </div>
   <div class="dashboard-section">
-    <div class="dashboard-label">[ STATS ]</div>
-    <div id="exercise-stats" class="dashboard-content"></div>
-    <div id="weight-stats" class="dashboard-content" style="margin-top: 8px;"></div>
+    <div class="dashboard-label">[ WEIGHT ]</div>
+    <div id="weight-stats" class="dashboard-content"></div>
   </div>
 </div>
 
@@ -294,7 +297,6 @@ const tooltip = document.getElementById('tooltip');
 const loadingDiv = document.getElementById('loading');
 const offlineSpan = document.getElementById('offline-indicator');
 const todayStatsDiv = document.getElementById('today-stats');
-const exerciseStatsDiv = document.getElementById('exercise-stats');
 const weightStatsDiv = document.getElementById('weight-stats');
 
 // history
@@ -595,20 +597,17 @@ async function loadFromLocal() {
 
 function updateDashboard(workouts, weights) {
   const t = today();
-  // Aggregate per exercise (sum per day) – but our store already has one entry per name+date, so just sum by date (though not needed)
-  const perEx = {};
+  // Aggregate per exercise for today only (just to show today's stats)
+  const perExToday = {};
   workouts.forEach(w => {
-    if (!perEx[w.name]) perEx[w.name] = {};
-    if (!perEx[w.name][w.date]) perEx[w.name][w.date] = 0;
-    perEx[w.name][w.date] += w.value;
-  });
-  // Today's stats
-  let todayStr = '';
-  Object.keys(perEx).forEach(name => {
-    const todayVal = perEx[name][t] || '—';
-    if (todayVal !== '—') {
-      todayStr += `${name}: ${todayVal}\n`;
+    if (w.date === t) {
+      if (!perExToday[w.name]) perExToday[w.name] = 0;
+      perExToday[w.name] += w.value;
     }
+  });
+  let todayStr = '';
+  Object.keys(perExToday).forEach(name => {
+    todayStr += `${name}: ${perExToday[name]}\n`;
   });
   if (todayStr === '') todayStr = 'No activity logged today.\n';
   // Add today's weight
@@ -619,18 +618,7 @@ function updateDashboard(workouts, weights) {
   }
   todayStatsDiv.innerHTML = todayStr.replace(/\n/g, '<br>');
 
-  // Exercise stats (best, last)
-  let exStats = '';
-  Object.keys(perEx).forEach(name => {
-    const dates = Object.keys(perEx[name]).sort().reverse();
-    const best = Math.max(...Object.values(perEx[name]));
-    const lastDate = dates.find(d => d !== t);
-    const lastVal = lastDate ? perEx[name][lastDate] : null;
-    exStats += `${name}: best ${best}${lastVal ? `, last ${lastVal}` : ''}\n`;
-  });
-  exerciseStatsDiv.innerHTML = exStats.replace(/\n/g, '<br>');
-
-  // Weight stats with delta (rounded to 1 decimal)
+  // Weight stats (latest, delta, recent)
   let weightStats = '';
   if (weights.length) {
     const sorted = weights.sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -784,7 +772,7 @@ async function cmdStats() {
   const weights = await db.weights.toArray();
   if (!workouts.length) { print('No workout data yet', 'err'); return; }
 
-  // Aggregate per exercise and date to get daily totals (already aggregated, but we sum just in case)
+  // Aggregate per exercise and date to get daily totals
   const dailyTotals = {};
   workouts.forEach(w => {
     if (!dailyTotals[w.name]) dailyTotals[w.name] = {};
@@ -797,20 +785,17 @@ async function cmdStats() {
     const values = Object.values(dates);
     const total = values.reduce((a,b) => a + b, 0);
     const best = Math.max(...values);
-    const days = values.length;
-    const avg = total / days;
     // Last 7 days total
     const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0,10);
     const weekTotal = Object.entries(dates)
       .filter(([date]) => date >= sevenDaysAgo)
       .reduce((sum, [, val]) => sum + val, 0);
-    perEx[name] = { total, best, avg, weekTotal };
+    perEx[name] = { total, best, weekTotal };
   }
 
   print('--- detailed stats ---');
   for (const [ex, data] of Object.entries(perEx)) {
-    const avgFormatted = typeof data.avg === 'number' ? data.avg.toFixed(1) : data.avg;
-    print(`${ex}: total ${data.total} | best ${data.best} | avg ${avgFormatted} | last 7d ${data.weekTotal}`);
+    print(`${ex}: total ${data.total} | best ${data.best} | last 7d ${data.weekTotal}`);
   }
   if (weights.length) {
     const lastWeight = weights[weights.length-1].value;
