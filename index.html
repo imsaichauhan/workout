@@ -4,8 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 <title>workout tracker</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23000'/><text x='50%25' y='12' text-anchor='middle' font-family='monospace' font-size='10' font-weight='bold' fill='%2322c55e'>[W]</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
 * {
   box-sizing: border-box;
@@ -53,6 +55,23 @@ body {
 .dashboard::-webkit-scrollbar-thumb:hover {
   background: #22c55e;
 }
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px dashed #2a2a2a;
+  padding-bottom: 6px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.dashboard-title {
+  color: #22c55e;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.dashboard-date {
+  color: #9ca3af;
+}
 .dashboard-section {
   margin-bottom: 16px;
 }
@@ -85,13 +104,17 @@ body {
 .cell {
   width: min(10px, 3vw);
   height: min(10px, 3vw);
-  background: #1a1a1a;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
   border-radius: 1px;
   transition: background 0.1s, transform 0.05s;
   display: inline-block;
   cursor: pointer;
 }
-.cell.active { background: #22c55e; }
+.cell.active {
+  background: #22c55e;
+  border-color: #22c55e;
+}
 .cell:active {
   transform: scale(0.95);
 }
@@ -190,6 +213,9 @@ input {
     font-size: 15px;
     max-height: 50vh;
   }
+  .dashboard-header {
+    font-size: 14px;
+  }
   .dashboard-label {
     font-size: 16px;
     padding-bottom: 4px;
@@ -227,6 +253,10 @@ input {
 <body>
 
 <div class="dashboard">
+  <div class="dashboard-header">
+    <span class="dashboard-title">WORKOUT TRACKER</span>
+    <span class="dashboard-date" id="dashboard-date"></span>
+  </div>
   <div class="dashboard-section">
     <div class="dashboard-label">[ HEATMAP ]</div>
     <div id="heatmap" class="dashboard-content"></div>
@@ -298,6 +328,7 @@ const loadingDiv = document.getElementById('loading');
 const offlineSpan = document.getElementById('offline-indicator');
 const todayStatsDiv = document.getElementById('today-stats');
 const weightStatsDiv = document.getElementById('weight-stats');
+const dashboardDateSpan = document.getElementById('dashboard-date');
 
 // history
 let history = [];
@@ -351,6 +382,18 @@ function today() {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function formatDashboardDate() {
+  const d = new Date();
+  const options = { year: 'numeric', month: 'short', day: 'numeric' };
+  return d.toLocaleDateString('en-US', options);
+}
+
+function formatShortDate(dateStr) {
+  const d = new Date(dateStr);
+  const options = { month: 'short', day: 'numeric' };
+  return d.toLocaleDateString('en-US', options);
 }
 
 function validDate(d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); }
@@ -545,29 +588,42 @@ async function performPull(abortSignal) {
   return success;
 }
 
-// --- Core data operations (using upsert via delete+add for workouts) ---
+// --- Core data operations with proper upsert for append ---
 async function storeWorkout(ex, val, date, append = false, skipConfirm = false) {
   if (!auth) throw new Error('Not authenticated');
   const name = map[ex] || ex;
   const existing = await db.workouts.where({ name, date }).first();
   const existingValue = existing ? existing.value : null;
   
+  // For non-append operations, check if we need confirmation
   if (!append && existing && !skipConfirm) {
     throw { needConfirm: true, message: `Overwrite ${name} on ${date} (current ${existingValue}) with ${val}? (y/n)`, type: 'overwrite', data: { ex, val, date, name, existingValue, append: false } };
   }
   
+  // Calculate the new value
   let newVal = val;
+  let appended = false;
   if (append && existing) {
     newVal = existing.value + val;
+    appended = true;
   }
-  const entry = { name_raw: ex, name, value: newVal, date };
-  // Delete existing entry for this name+date (if any)
+  
+  // Delete existing entry if it exists
   if (existing) {
     await db.workouts.where({ name, date }).delete();
   }
+  
+  // Add the new/updated entry
+  const entry = { name_raw: ex, name, value: newVal, date };
   await db.workouts.add(entry);
+  
+  // Sync to Supabase (delete old, insert new)
+  if (existing) {
+    await syncToSupabase('delete_workout', { name, date });
+  }
   const synced = await syncToSupabase('insert_workout', entry);
-  return { synced, entry, replaced: !append && !!existing, existingValue, appended: append && !!existing };
+  
+  return { synced, entry, replaced: !append && !!existing, existingValue, appended };
 }
 
 async function storeWeight(val, date, skipConfirm = false) {
@@ -593,6 +649,8 @@ async function loadFromLocal() {
   generateHeatmap(workouts, weights);
   window.weightsMap = {};
   weights.forEach(w => window.weightsMap[w.date] = w.value);
+  // Update dashboard date
+  dashboardDateSpan.textContent = formatDashboardDate();
 }
 
 function updateDashboard(workouts, weights) {
@@ -618,7 +676,7 @@ function updateDashboard(workouts, weights) {
   }
   todayStatsDiv.innerHTML = todayStr.replace(/\n/g, '<br>');
 
-  // Weight stats (latest, delta, recent)
+  // Weight stats (latest, delta, recent) with readable dates
   let weightStats = '';
   if (weights.length) {
     const sorted = weights.sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -631,11 +689,12 @@ function updateDashboard(workouts, weights) {
       delta = roundedDiff > 0 ? ` (+${roundedDiff} kg)` : ` (${roundedDiff} kg)`;
     }
     const latestWeight = Math.round(latest.value * 10) / 10;
-    weightStats = `Latest: ${latestWeight} kg on ${latest.date}${delta}`;
-    // Show recent 3 weights, rounded
+    const latestDateReadable = formatShortDate(latest.date);
+    weightStats = `Latest: ${latestWeight} kg on ${latestDateReadable}${delta}`;
+    // Show recent 3 weights, with readable dates
     const recent = sorted.slice(0, 3);
     if (recent.length > 1) {
-      weightStats += `\nRecent: ${recent.map(w => `${Math.round(w.value * 10) / 10} (${w.date.slice(5)})`).join(' · ')}`;
+      weightStats += `\nRecent: ${recent.map(w => `${Math.round(w.value * 10) / 10} (${formatShortDate(w.date)})`).join(' · ')}`;
     }
   } else {
     weightStats = 'No weight data yet.';
@@ -732,6 +791,40 @@ document.body.addEventListener('touchstart', (e) => {
   if (!e.target.closest('.cell') && !tooltip.contains(e.target)) hideTooltip();
 });
 
+// --- Share command ---
+async function captureDashboard() {
+  const dashboard = document.querySelector('.dashboard');
+  if (!dashboard) return;
+  
+  // Hide tooltip if visible
+  hideTooltip();
+  
+  // Store original overflow style
+  const originalOverflow = dashboard.style.overflow;
+  // Hide scrollbar temporarily for clean capture
+  dashboard.style.overflow = 'hidden';
+  
+  try {
+    const canvas = await html2canvas(dashboard, {
+      scale: 2,
+      backgroundColor: '#0a0a0a',
+      logging: false,
+      useCORS: true
+    });
+    const link = document.createElement('a');
+    const todayStr = today();
+    link.download = `tracker-${todayStr}.png`;
+    link.href = canvas.toDataURL();
+    link.click();
+    print('Dashboard captured as image: tracker-' + todayStr + '.png', 'success');
+  } catch (err) {
+    print('Failed to capture dashboard: ' + err.message, 'err');
+  } finally {
+    // Restore overflow
+    dashboard.style.overflow = originalOverflow;
+  }
+}
+
 // --- Command handlers (read-only, allowed for guests) ---
 async function listWorkout(args) {
   const { from, to } = parseDateRange(args);
@@ -740,7 +833,7 @@ async function listWorkout(args) {
   if (to) query = query.filter(w => w.date <= to);
   const results = await query.toArray();
   if (!results.length) { print('No workouts found.'); return; }
-  // Group by date to show aggregated values (though our store already has one per name+date)
+  // Group by date to show aggregated values
   const grouped = {};
   results.forEach(w => {
     if (!grouped[w.date]) grouped[w.date] = {};
@@ -937,6 +1030,7 @@ Sync & maintenance:
   push              -> send local changes to server (safe, keeps local data)
   pull              -> replace local data with server data (warning: discards local changes)
   resync            -> wipe local data and reload from server (same as pull)
+  share             -> capture dashboard as image
   heatmap-start YYYY-MM-DD
   stats
   export
@@ -1091,7 +1185,7 @@ function updateAutocompleteSuggestions(input) {
   const words = input.split(' ');
   const lastWord = words[words.length-1];
   if (!lastWord) return [];
-  const allCommands = ['w', 'wt', 'list', 'delete', 'edit', 'add-ex', 'heatmap-start', 'stats', 'export', 'clear', 'help', 'tutorial', 'login', 'logout', 'push', 'pull', 'resync', 'pending', 'plan', 'exercises'];
+  const allCommands = ['w', 'wt', 'list', 'delete', 'edit', 'add-ex', 'heatmap-start', 'stats', 'export', 'clear', 'help', 'tutorial', 'login', 'logout', 'push', 'pull', 'resync', 'pending', 'plan', 'exercises', 'share'];
   const types = ['workout', 'weight'];
   let suggestions = [];
   if (words.length === 1) suggestions = allCommands.filter(c => c.startsWith(lastWord));
@@ -1202,7 +1296,7 @@ async function run(input) {
     'login', 'logout', 'help', 'clear', 'tutorial', 
     'list', 'stats', 'export', 'heatmap-start', 'pull', 
     'push', 'resync', 'pending', 'delete', 'edit', 'add-ex', 
-    'w', 'wt', 'plan', 'exercises'
+    'w', 'wt', 'plan', 'exercises', 'share'
   ]);
 
   if (!allKnownCommands.has(cmdName)) {
@@ -1235,7 +1329,7 @@ async function run(input) {
 --- GUEST COMMANDS (always available) ---
   list workout|weight [--from YYYY-MM-DD] [--to YYYY-MM-DD]
   stats, export, heatmap-start YYYY-MM-DD
-  pull, clear, help, tutorial, plan, exercises
+  pull, clear, help, tutorial, plan, exercises, share
 
 Tip: Press Tab to autocomplete commands and exercise names.
 
@@ -1246,7 +1340,7 @@ Login with 'login' to enable additional commands: w, wt, delete, edit, add-ex, p
 --- GUEST COMMANDS (always available) ---
   list workout|weight [--from YYYY-MM-DD] [--to YYYY-MM-DD]
   stats, export, heatmap-start YYYY-MM-DD
-  pull, clear, help, tutorial, plan, exercises
+  pull, clear, help, tutorial, plan, exercises, share
 
 Tip: Press Tab to autocomplete commands and exercise names.
 
@@ -1266,6 +1360,10 @@ Tip: Press Tab to autocomplete commands and exercise names.
   if (cmdName === 'tutorial') { tutorial(); return; }
   if (cmdName === 'plan') { workoutPlan(); return; }
   if (cmdName === 'exercises') { listExercises(); return; }
+  if (cmdName === 'share') {
+    await captureDashboard();
+    return;
+  }
 
   // read-only commands (allowed for guests)
   if (cmdName === 'list') {
@@ -1517,7 +1615,18 @@ window.addEventListener('load', async () => {
   await loadFromLocal();
 
   if (!auth) {
-    print("Type 'help' to see available commands.", 'info');
+    const pre = document.createElement('pre');
+    pre.className = 'success';
+    pre.style.cssText = 'margin:0;padding:0;font-family:inherit;font-size:inherit;line-height:1.4;';
+    pre.textContent = [
+      '  ___     _     ___ ',
+      ' / __|   /_\\   |_ _|',
+      ' \\__ \\  / _ \\   | | ',
+      ' |___/ /_/ \\_\\ |___|',
+    ].join('\n');
+    logEl.appendChild(pre);
+    print('', 'info');
+    print("type 'help' to see available commands.", 'info');
   }
 
   setInterval(async () => {
