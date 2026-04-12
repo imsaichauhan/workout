@@ -301,7 +301,11 @@ const defaultMap = {
   st: 'Step-ups',
   ip: 'Incline push-ups',
   sm: 'Superman',
-  mc: 'Mountain climbers'
+  mc: 'Mountain climbers',
+  curl: 'Bicep Curl',
+  triext: 'Overhead Tricep Extension',
+  hcurl: 'Hammer Curl',
+  kick: 'Tricep Kickback'
 };
 
 let customExercises = {};
@@ -970,28 +974,33 @@ function listExercises() {
 
 function workoutPlan() {
   print(`
---- 3-DAY BODYWEIGHT PLAN (BEGINNER) ---
+--- 3-DAY BODYWEIGHT + DUMBBELL ARM PLAN (4 KG) ---
 
 Day 1
 Squats (sq) - 3 x 10-12
 Push-ups (pu) - 3 x 8-10
 Plank (pl) - 3 x 20 sec
 Dead Bug (db) - 2 x 8 per side
+Bicep Curl (curl) - 3 x 15
+Overhead Tricep Extension (triext) - 3 x 12
 
 Day 2
 Lunges (lu) - 3 x 10 each leg
 Chair dips (cd) - 3 x 8-10
 Glute bridge (gb) - 3 x 12-15
 Leg Raises (lr) - 2 x 8-10
+Hammer Curl (hcurl) - 3 x 15
+Tricep Kickback (kick) - 3 x 12
 
 Day 3
 Step-ups (st) - 3 x 10 each leg
 Incline push-ups (ip) - 3 x 8-10
 Superman (sm) - 3 x 10
 Mountain climbers (mc) - 2 x 20 sec
+Bicep Curl (curl) - 3 x 15
+Overhead Tricep Extension (triext) - 3 x 12
 
-Schedule
-3 non-consecutive days per week
+Schedule: 3 non-consecutive days per week
 `);
 }
 
